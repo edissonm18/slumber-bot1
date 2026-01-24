@@ -93,7 +93,20 @@ function buildRowFromHeaders(headers, data) {
     else if (h === 'estado') row[i] = data.estado || '';
     else if (h === 'nombre') row[i] = data.nombre || '';
     else if (h === 'telefono' || h === 'teléfono') row[i] = data.telefono || data.waId || '';
+    // Campos extendidos (si existen en tus hojas nuevas)
+    else if (h === 'evento') row[i] = data.evento || '';
+    else if (h === 'estado_conversacion' || h === 'estado conversación' || h === 'estado') row[i] = data.estadoConversacion || data.estado || '';
+    else if (h === 'ultimo_mensaje' || h === 'último mensaje') row[i] = data.ultimoMensaje || data.texto || '';
+    else if (h === 'ultima_direccion' || h === 'última dirección') row[i] = data.ultimaDireccion || data.direccion || '';
+    else if (h === 'actualizado_en' || h === 'actualizado en') row[i] = data.actualizadoEn || data.fechaISO || '';
+    else if (h === 'iniciado_en' || h === 'iniciado en') row[i] = data.iniciadoEn || '';
+    else if (h === 'ultima_interaccion' || h === 'última interacción') row[i] = data.ultimaInteraccion || data.fechaISO || '';
+    else if (h === 'cliente' || h === 'nombre cliente') row[i] = data.cliente || data.nombre || '';
+    else if (h === 'ciudad') row[i] = data.ciudad || '';
+    else if (h === 'barrio') row[i] = data.barrio || '';
+    else if (h === 'direccion_entrega' || h === 'dirección entrega') row[i] = data.direccionEntrega || data.direccion || '';
   }
+
   return row;
 }
 
@@ -115,6 +128,120 @@ async function appendRowToSheet(sheetName, rowValues) {
   }
 }
 
+
+// ================== SHEETS: UPSERT (evita 1 fila por mensaje) ==================
+// Cache de filas encontradas por waId (reduce lecturas)
+const sheetsRowIndexCache = {
+  // sheetName: { keyValue: rowNumber }
+};
+
+function colToLetter(col) {
+  // col: 1 -> A, 26 -> Z, 27 -> AA
+  let temp = col;
+  let letter = '';
+  while (temp > 0) {
+    let mod = (temp - 1) % 26;
+    letter = String.fromCharCode(65 + mod) + letter;
+    temp = Math.floor((temp - 1) / 26);
+  }
+  return letter;
+}
+
+function getRangeForRow(sheetName, headers, rowNumber) {
+  const lastCol = colToLetter(Math.max(1, headers.length));
+  return `${sheetName}!A${rowNumber}:${lastCol}${rowNumber}`;
+}
+
+function normalizeHeader(h) {
+  return (h || '').toString().toLowerCase().trim();
+}
+
+async function findRowNumberByKey(sheetName, headers, keyValue, keyHeaderCandidates = ['waid','wa_id','wa id','telefono','teléfono']) {
+  const sheets = getSheetsClient();
+  const spreadsheetId = process.env.SHEET_ID;
+  if (!sheets || !spreadsheetId) return null;
+  if (!headers || !headers.length) return null;
+  if (!keyValue) return null;
+
+  sheetsRowIndexCache[sheetName] = sheetsRowIndexCache[sheetName] || {};
+  if (sheetsRowIndexCache[sheetName][keyValue]) return sheetsRowIndexCache[sheetName][keyValue];
+
+  // Encuentra la columna que funciona como llave (waId preferido)
+  const headerNorm = headers.map(normalizeHeader);
+  let keyColIdx = -1;
+  for (const cand of keyHeaderCandidates) {
+    const idx = headerNorm.indexOf(normalizeHeader(cand));
+    if (idx >= 0) { keyColIdx = idx; break; }
+  }
+  if (keyColIdx < 0) return null;
+
+  const colLetter = colToLetter(keyColIdx + 1);
+  try {
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${sheetName}!${colLetter}2:${colLetter}`
+    });
+    const values = resp.data.values || [];
+    for (let i = 0; i < values.length; i++) {
+      const cell = (values[i] && values[i][0]) ? values[i][0].toString().trim() : '';
+      if (cell === keyValue) {
+        const rowNumber = i + 2; // porque empezamos en fila 2
+        sheetsRowIndexCache[sheetName][keyValue] = rowNumber;
+        return rowNumber;
+      }
+    }
+    return null;
+  } catch (e) {
+    console.error(`❌ Error buscando fila por llave en Sheets (${sheetName}):`, e.response?.data || e.message);
+    return null;
+  }
+}
+
+async function upsertRowToSheet(sheetName, headers, rowValues, keyValue, keyHeaderCandidates) {
+  const sheets = getSheetsClient();
+  const spreadsheetId = process.env.SHEET_ID;
+  if (!sheets || !spreadsheetId) return;
+
+  try {
+    const rowNumber = await findRowNumberByKey(sheetName, headers, keyValue, keyHeaderCandidates);
+    if (rowNumber) {
+      // Update existente
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: getRangeForRow(sheetName, headers, rowNumber),
+        valueInputOption: 'RAW',
+        requestBody: { values: [rowValues] }
+      });
+      return;
+    }
+    // Append nuevo (no existía)
+    await appendRowToSheet(sheetName, rowValues);
+  } catch (e) {
+    console.error(`❌ Error UPSERT en Sheets (${sheetName}):`, e.response?.data || e.message);
+  }
+}
+
+// Registra un evento puntual en una pestaña opcional "Eventos" (no rompe si no existe)
+async function logEventoFlexible(eventData) {
+  const sheetName = 'Eventos';
+  const headers = await getSheetHeaders(sheetName);
+  if (!headers) return; // si no existe, no hacemos nada
+  const data = {
+    fechaISO: new Date().toISOString(),
+    waId: eventData.waId || '',
+    evento: eventData.evento || '',
+    flujo: eventData.flujo || '',
+    step: eventData.step || '',
+    texto: eventData.texto || '',
+    extra: eventData.extra || ''
+  };
+  const row = buildRowFromHeaders(headers, data) || [
+    data.fechaISO, data.waId, data.evento, data.flujo, data.step, data.texto, data.extra
+  ];
+  if (row) await appendRowToSheet(sheetName, row);
+}
+// ================== FIN SHEETS: UPSERT ==================
+
 function getFlowStepForLog(state) {
   if (!state) return '';
   const flujo = state.flujo || '';
@@ -126,12 +253,20 @@ function getFlowStepForLog(state) {
   return '';
 }
 
+
 async function logConversacion({ direccion, waId, messageId, texto, extra }) {
+  // IMPORTANTE:
+  // Antes se hacía append por cada mensaje -> generaba desorden y lentitud.
+  // Ahora hacemos UPSERT (1 fila por cliente) actualizando la información más reciente.
   const sheetName = 'Conversaciones';
   const headers = await getSheetHeaders(sheetName);
   const state = userStates[waId] || null;
 
+  // Estado de conversación sugerido
+  const estadoConversacion = (state?.flujo === 'manual') ? 'manual' : (state?.flujo ? 'activa' : 'inicio');
+
   const data = {
+    // Campos básicos (compatibles con tu hoja actual)
     fechaISO: new Date().toISOString(),
     direccion: direccion || '',
     waId: waId || '',
@@ -139,14 +274,73 @@ async function logConversacion({ direccion, waId, messageId, texto, extra }) {
     flujo: state?.flujo || '',
     step: getFlowStepForLog(state),
     texto: (texto || '').toString(),
-    extra: extra ? (typeof extra === 'string' ? extra : JSON.stringify(extra)) : ''
+    extra: extra ? (typeof extra === 'string' ? extra : JSON.stringify(extra)) : '',
+
+    // Campos extendidos (si existen en tu nueva hoja)
+    estadoConversacion,
+    ultimoMensaje: (texto || '').toString(),
+    ultimaDireccion: direccion || '',
+    actualizadoEn: new Date().toISOString(),
+    ultimaInteraccion: new Date().toISOString(),
+    // Si más adelante capturas nombre/ciudad/dirección en el flujo, se pueden mapear aquí:
+    cliente: state?.nombre || state?.cliente || '',
+    ciudad: state?.ciudad || '',
+    barrio: state?.barrio || '',
+    direccionEntrega: state?.direccionEntrega || state?.direccion || ''
   };
 
+  // Si no hay headers, hacemos fallback (pero ideal es que sí existan)
   const row = headers ? buildRowFromHeaders(headers, data) : [
     data.fechaISO, data.direccion, data.waId, data.messageId, data.flujo, data.step, data.texto, data.extra
   ];
 
-  if (row) await appendRowToSheet(sheetName, row);
+  if (!row) return;
+
+  if (headers && headers.length) {
+    // UPSERT por waId
+    await upsertRowToSheet(
+      sheetName,
+      headers,
+      row,
+      waId,
+      ['waid','wa_id','wa id','telefono','teléfono']
+    );
+  } else {
+    // Fallback: append
+    await appendRowToSheet(sheetName, row);
+  }
+}
+
+// Si en algún momento quieres registrar un pedido, esta función intenta adaptarse a los encabezados de la pestaña "Pedidos".
+
+async function notifyVendedoresNuevoPedido(pedido) {
+  // Configura en Render: SELLER_NUMBERS=57300xxxxxxx,57311yyyyyyy (con código país)
+  // Opcional: SELLER_NOTIFY_PREFIX para un texto adicional.
+  const raw = (process.env.SELLER_NUMBERS || '').trim();
+  if (!raw) return;
+
+  const nums = raw.split(',').map(s => s.trim()).filter(Boolean);
+  if (!nums.length) return;
+
+  const prefix = (process.env.SELLER_NOTIFY_PREFIX || '').trim();
+  const msgLines = [
+    prefix ? prefix : '🆕 *Nuevo pedido finalizado*',
+    '',
+    `📞 *Cliente:* ${pedido.nombre || 'N/D'}`,
+    `📲 *WhatsApp:* ${pedido.waId || 'N/D'}`,
+    pedido.producto ? `🛒 *Producto:* ${pedido.producto}` : '',
+    pedido.medida ? `📏 *Medida:* ${pedido.medida}` : '',
+    (pedido.precio && pedido.precio !== '0') ? `💰 *Precio:* ${pedido.precio}` : '',
+    pedido.pago ? `💳 *Pago:* ${pedido.pago}` : '',
+    '',
+    '✅ Responde rápido para que el cliente no se enfríe.'
+  ].filter(Boolean);
+
+  const text = msgLines.join("\n");
+  for (const n of nums) {
+    // Enviamos sin log para no crear filas de "conversación" para vendedores
+    await sendMessage(n, text, { skipLog: true });
+  }
 }
 
 // Si en algún momento quieres registrar un pedido, esta función intenta adaptarse a los encabezados de la pestaña "Pedidos".
@@ -158,20 +352,34 @@ async function logPedidoFlexible(pedidoData) {
   const data = {
     fechaISO: new Date().toISOString(),
     waId: pedidoData.waId || '',
-    telefono: pedidoData.waId || '',
+    telefono: pedidoData.telefono || pedidoData.waId || '',
     flujo: pedidoData.flujo || '',
     producto: pedidoData.producto || '',
     medida: pedidoData.medida || '',
     precio: pedidoData.precio || '',
     pago: pedidoData.pago || '',
-    estado: pedidoData.estado || '',
+    // Estado recomendado para control interno
+    estado: pedidoData.estado || 'nuevo',
     nombre: pedidoData.nombre || '',
     texto: pedidoData.texto || '',
     extra: pedidoData.extra || ''
   };
 
   const row = buildRowFromHeaders(headers, data);
-  if (row) await appendRowToSheet(sheetName, row);
+  if (row) {
+    await appendRowToSheet(sheetName, row);
+    // Notificación a vendedores (si está configurado)
+    await notifyVendedoresNuevoPedido(data).catch(()=>{});
+    // Evento opcional
+    await logEventoFlexible({
+      waId: data.waId,
+      evento: 'pedido_finalizado',
+      flujo: data.flujo,
+      step: 'finalizar_pedido',
+      texto: data.producto || '',
+      extra: data.extra || ''
+    }).catch(()=>{});
+  }
 }
 
 
@@ -226,7 +434,7 @@ function getCabeceroPriceBySize(sizeCode) {
 }
 
 // Funciones para enviar mensajes
-async function sendMessage(to, text) {
+async function sendMessage(to, text, opts = {}) {
   const url = `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`;
   try {
     const resp = await axios.post(url, {
@@ -241,7 +449,10 @@ async function sendMessage(to, text) {
     });
     const outId = resp?.data?.messages?.[0]?.id || '';
     // Registramos la salida en Google Sheets (no bloquea el webhook)
-    logConversacion({ direccion: 'OUT', waId: to, messageId: outId, texto: text, extra: '' }).catch(()=>{});
+    // Si es una notificación interna a vendedores, podemos evitar contaminar la hoja de Conversaciones.
+    if (!opts.skipLog) {
+      logConversacion({ direccion: 'OUT', waId: to, messageId: outId, texto: text, extra: '' }).catch(()=>{});
+    }
   } catch (error) {
     console.error('❌ Error al enviar mensaje:', error.response?.data || error.message);
   }
@@ -779,7 +990,7 @@ async function handleTextMessageAsync(from, text) {
         medida: st.medida || '',
         precio: st.protectorPrice || '',
         pago: st.pagoInfoMetodo || st.pagoDetalle || '',
-        estado: 'finalizar_pedido',
+        estado: 'nuevo',
         texto: msg,
         extra: JSON.stringify(st)
       }).catch(()=>{});
