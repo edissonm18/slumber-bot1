@@ -1,7 +1,179 @@
 const axios = require('axios');
+const { google } = require('googleapis');
 
 const userStates = {};
 const messageHistory = new Set();
+
+const sheetsCache = {
+  client: null,
+  headers: {} // { sheetName: [header1, ...] }
+};
+
+function safeJsonParse(str) {
+  if (!str) return null;
+  try {
+    return JSON.parse(str);
+  } catch {
+    // A veces Render guarda el JSON como string con saltos escapados
+    try {
+      const fixed = str.replace(/\\n/g, '\n');
+      return JSON.parse(fixed);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function getSheetsClient() {
+  if (sheetsCache.client) return sheetsCache.client;
+
+  const credsRaw = process.env.GOOGLE_SHEETS_CREDENTIALS;
+  const creds = safeJsonParse(credsRaw);
+  if (!creds) {
+    console.warn('⚠️ GOOGLE_SHEETS_CREDENTIALS no es JSON válido. No se registrarán datos en Sheets.');
+    return null;
+  }
+
+  // Arregla private_key si viene con \n
+  if (creds.private_key && typeof creds.private_key === 'string') {
+    creds.private_key = creds.private_key.replace(/\\n/g, '\n');
+  }
+
+  const auth = new google.auth.GoogleAuth({
+    credentials: creds,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets']
+  });
+
+  sheetsCache.client = google.sheets({ version: 'v4', auth });
+  return sheetsCache.client;
+}
+
+async function getSheetHeaders(sheetName) {
+  if (sheetsCache.headers[sheetName]) return sheetsCache.headers[sheetName];
+
+  const sheets = getSheetsClient();
+  const spreadsheetId = process.env.SHEET_ID;
+  if (!sheets || !spreadsheetId) return null;
+
+  try {
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${sheetName}!1:1`
+    });
+    const headers = (resp.data.values && resp.data.values[0]) ? resp.data.values[0].map(h => (h || '').toString().trim()) : null;
+    sheetsCache.headers[sheetName] = headers;
+    return headers;
+  } catch (e) {
+    console.error(`❌ No pude leer encabezados de la pestaña "${sheetName}":`, e.response?.data || e.message);
+    return null;
+  }
+}
+
+function buildRowFromHeaders(headers, data) {
+  if (!Array.isArray(headers) || headers.length === 0) return null;
+  const row = new Array(headers.length).fill('');
+  const norm = (s) => (s || '').toString().toLowerCase().trim();
+
+  for (let i = 0; i < headers.length; i++) {
+    const h = norm(headers[i]);
+    // Conversaciones (según tu estructura)
+    if (h === 'fechaiso') row[i] = data.fechaISO || '';
+    else if (h === 'direccion') row[i] = data.direccion || '';
+    else if (h === 'waid' || h === 'wa_id' || h === 'wa id') row[i] = data.waId || '';
+    else if (h === 'messageid' || h === 'message id') row[i] = data.messageId || '';
+    else if (h === 'flujo') row[i] = data.flujo || '';
+    else if (h === 'step' || h === 'paso') row[i] = data.step || '';
+    else if (h === 'texto' || h === 'mensaje') row[i] = data.texto || '';
+    else if (h === 'extra' || h === 'extras') row[i] = data.extra || '';
+    // Pedidos (si tu pestaña tiene otras columnas)
+    else if (h === 'producto') row[i] = data.producto || '';
+    else if (h === 'medida') row[i] = data.medida || '';
+    else if (h === 'precio') row[i] = data.precio || '';
+    else if (h === 'pago' || h === 'metodo de pago' || h === 'método de pago') row[i] = data.pago || '';
+    else if (h === 'estado') row[i] = data.estado || '';
+    else if (h === 'nombre') row[i] = data.nombre || '';
+    else if (h === 'telefono' || h === 'teléfono') row[i] = data.telefono || data.waId || '';
+  }
+  return row;
+}
+
+async function appendRowToSheet(sheetName, rowValues) {
+  const sheets = getSheetsClient();
+  const spreadsheetId = process.env.SHEET_ID;
+  if (!sheets || !spreadsheetId) return;
+
+  try {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: `${sheetName}!A:Z`,
+      valueInputOption: 'RAW',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [rowValues] }
+    });
+  } catch (e) {
+    console.error(`❌ Error escribiendo en Sheets (${sheetName}):`, e.response?.data || e.message);
+  }
+}
+
+function getFlowStepForLog(state) {
+  if (!state) return '';
+  const flujo = state.flujo || '';
+  if (flujo === 'pago') return state.pagoStep || '';
+  if (flujo === 'pago_info') return state.pagoInfoStep || '';
+  if (flujo === 'pago_anticipado_info') return state.pagoAnticipadoStep || '';
+  if (flujo === 'protector') return state.protectorStep || '';
+  // otros flujos sin step específico
+  return '';
+}
+
+async function logConversacion({ direccion, waId, messageId, texto, extra }) {
+  const sheetName = 'Conversaciones';
+  const headers = await getSheetHeaders(sheetName);
+  const state = userStates[waId] || null;
+
+  const data = {
+    fechaISO: new Date().toISOString(),
+    direccion: direccion || '',
+    waId: waId || '',
+    messageId: messageId || '',
+    flujo: state?.flujo || '',
+    step: getFlowStepForLog(state),
+    texto: (texto || '').toString(),
+    extra: extra ? (typeof extra === 'string' ? extra : JSON.stringify(extra)) : ''
+  };
+
+  const row = headers ? buildRowFromHeaders(headers, data) : [
+    data.fechaISO, data.direccion, data.waId, data.messageId, data.flujo, data.step, data.texto, data.extra
+  ];
+
+  if (row) await appendRowToSheet(sheetName, row);
+}
+
+// Si en algún momento quieres registrar un pedido, esta función intenta adaptarse a los encabezados de la pestaña "Pedidos".
+async function logPedidoFlexible(pedidoData) {
+  const sheetName = 'Pedidos';
+  const headers = await getSheetHeaders(sheetName);
+  if (!headers) return;
+
+  const data = {
+    fechaISO: new Date().toISOString(),
+    waId: pedidoData.waId || '',
+    telefono: pedidoData.waId || '',
+    flujo: pedidoData.flujo || '',
+    producto: pedidoData.producto || '',
+    medida: pedidoData.medida || '',
+    precio: pedidoData.precio || '',
+    pago: pedidoData.pago || '',
+    estado: pedidoData.estado || '',
+    nombre: pedidoData.nombre || '',
+    texto: pedidoData.texto || '',
+    extra: pedidoData.extra || ''
+  };
+
+  const row = buildRowFromHeaders(headers, data);
+  if (row) await appendRowToSheet(sheetName, row);
+}
+
 
 // Función para iniciar o cambiar de flujo manteniendo la información existente del usuario.
 // Si se desea limpiar completamente el estado (por ejemplo al escribir "inicio"), se debe
@@ -57,7 +229,7 @@ function getCabeceroPriceBySize(sizeCode) {
 async function sendMessage(to, text) {
   const url = `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`;
   try {
-    await axios.post(url, {
+    const resp = await axios.post(url, {
       messaging_product: 'whatsapp',
       to,
       text: { body: text }
@@ -67,6 +239,9 @@ async function sendMessage(to, text) {
         'Content-Type': 'application/json'
       }
     });
+    const outId = resp?.data?.messages?.[0]?.id || '';
+    // Registramos la salida en Google Sheets (no bloquea el webhook)
+    logConversacion({ direccion: 'OUT', waId: to, messageId: outId, texto: text, extra: '' }).catch(()=>{});
   } catch (error) {
     console.error('❌ Error al enviar mensaje:', error.response?.data || error.message);
   }
@@ -182,6 +357,9 @@ exports.handleMessage = (req, res) => {
   }
   messageHistory.add(message.id);
   setTimeout(() => messageHistory.delete(message.id), 5 * 60 * 1000);
+
+  // Registramos el mensaje entrante en Google Sheets (no bloquea la respuesta del webhook)
+  logConversacion({ direccion: 'IN', waId: from, messageId: message.id, texto: text, extra: '' }).catch(()=>{});
 
   res.sendStatus(200);
   handleTextMessageAsync(from, text);
@@ -586,6 +764,28 @@ async function handleTextMessageAsync(from, text) {
   const state = userStates[from] || null;
   // Aseguramos que el texto recibido sea una cadena y removemos espacios innecesarios.
   const msg = (text || '').trim();
+  // Si el usuario está intentando "finalizar pedido", registramos un resumen flexible en la pestaña "Pedidos" (si existe)
+  try {
+    const st = userStates[from] || {};
+    const wantsFinalize = msg.toLowerCase().includes('finalizar pedido') || (st.flujo && (st.flujo === 'pago' || st.flujo === 'pago_info' || st.flujo === 'pago_anticipado_info') && (msg === '1' || msg === '1️⃣'));
+    if (wantsFinalize) {
+      const resumenProducto = [
+        st.tipo, st.dureza, st.medida, st.basecama || st.basecamaTipo, st.cabecero || st.cabeceroTipo, st.almohadaProducto, st.promoProducto, st.muebleProducto, st.comedorProducto
+      ].filter(Boolean).join(' | ');
+      logPedidoFlexible({
+        waId: from,
+        flujo: st.flujo || '',
+        producto: resumenProducto,
+        medida: st.medida || '',
+        precio: st.protectorPrice || '',
+        pago: st.pagoInfoMetodo || st.pagoDetalle || '',
+        estado: 'finalizar_pedido',
+        texto: msg,
+        extra: JSON.stringify(st)
+      }).catch(()=>{});
+    }
+  } catch(e) { /* no-op */ }
+
   // Atajos directos de catálogos
   try {
     const handled = await tryCatalogShortcuts(from, msg);

@@ -18,7 +18,7 @@ app.get('/health', (_req, res) => {
 });
 
 // Verifica que las variables de entorno esenciales existan y muestra una advertencia si no.
-const requiredEnv = ['VERIFY_TOKEN', 'WHATSAPP_TOKEN', 'PHONE_NUMBER_ID'];
+const requiredEnv = ['VERIFY_TOKEN', 'WHATSAPP_TOKEN', 'PHONE_NUMBER_ID', 'SHEET_ID', 'GOOGLE_SHEETS_CREDENTIALS'];
 requiredEnv.forEach(key => {
   if (!process.env[key]) {
     console.warn(`⚠️ Advertencia: La variable de entorno ${key} no está definida.`);
