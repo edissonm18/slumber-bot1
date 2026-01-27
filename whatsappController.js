@@ -1,4 +1,22 @@
 const axios = require('axios');
+
+
+async function getMediaDownloadUrl(mediaId) {
+  // WhatsApp Cloud API: obtener URL descargable del media
+  // Requiere WHATSAPP_TOKEN válido.
+  try {
+    const token = process.env.WHATSAPP_TOKEN || '';
+    if (!token || !mediaId) return '';
+    const url = `https://graph.facebook.com/v19.0/${mediaId}?fields=url`;
+    const resp = await axios.get(url, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    return resp.data?.url || '';
+  } catch (e) {
+    return '';
+  }
+}
+
 const { google } = require('googleapis');
 
 const userStates = {};
@@ -183,6 +201,9 @@ function inferUltimaInteraccion(state) {
 }
 // ================== FIN CONVERSATION CACHE ==================
 
+let __updatingPedidoFromConv = false;
+
+
 const sheetsCache = {
   client: null,
   headers: {} // { sheetName: [header1, ...] }
@@ -296,6 +317,8 @@ else if (h === 'ultima interaccion' || h === 'última interacción' || h === 'ul
 else if (h === 'log') row[i] = data.log || '';
 else if (h === 'datos del cliente' || h === 'datos_cliente') row[i] = data.datosCliente || '';
 else if (h === 'adjuntos') row[i] = data.adjuntos || '';
+
+else if (h === 'wald') row[i] = data.waId || data.numeroWhatsapp || '';
     else if (h === 'order_id' || h === 'pedido_id' || h === 'orderid') row[i] = data.orderId || '';
   }
   return row;
@@ -467,13 +490,20 @@ function getFriendlyStepName(flow, step) {
   }
   return s;
 }
+
 function getFlowStepForLog(state) {
   if (!state) return '';
-  const flujo = state.flujo || '';
+  const flujo = (state.flujo || state.flowRoot || '').toString().toLowerCase().trim();
+
+  // Pasos de pago
   if (flujo === 'pago') return state.pagoStep || 'metodo';
   if (flujo === 'pago_info') return state.pagoInfoStep || 'info';
   if (flujo === 'pago_anticipado_info') return state.pagoAnticipadoStep || 'info';
+
+  // Otros flujos con subpasos
   if (flujo === 'protector') return state.protectorStep || '';
+  if (flujo === 'soporte') return state.soporteStep || (state.soporteSolicitud ? `Soporte: ${state.soporteSolicitud}` : 'Soporte');
+
   // Para flujos de producto, si ya hay selección, lo reflejamos en un texto corto
   if (flujo === 'colchon') return state.tipo ? `Colchón: ${state.tipo}` : (state.medida ? `Medida: ${state.medida}` : '');
   if (flujo === 'salas') return state.salaProducto ? `Sala: ${state.salaProducto}` : (state.salaTipo || '');
@@ -481,17 +511,16 @@ function getFlowStepForLog(state) {
   if (flujo === 'basecama') return state.basecamaProducto ? `Base: ${state.basecamaProducto}` : (state.basecamaTipo || '');
   if (flujo === 'cabecero') return state.cabecero ? `Cabecero: ${state.cabecero}` : (state.cabeceroTipo || '');
   if (flujo === 'almohada') return state.almohadaProducto ? `Almohada: ${state.almohadaProducto}` : (state.almohadaTipo || '');
-  if (flujo === 'soporte') return state.soporteSolicitud ? `Soporte: ${state.soporteSolicitud}` : '';
-  return '';
+
+  return state.step || '';
 }
-
-
 
 
 async function logConversacion({ direccion, waId, messageId, texto, extra, msgType = 'text', mediaId = '', mediaCaption = '' }) {
   const sheetName = 'Conversaciones';
   const headers = await getSheetHeaders(sheetName);
   const conv = ensureConv(waId);
+  const state = userStates[waId] || null;
 
   const stamp = nowISO();
   const who = direccion === 'IN' ? 'IN' : 'OUT';
@@ -499,21 +528,48 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const line = `${who} ${stamp}: ${cleanText}`;
   conv.log = appendWithSep(conv.log, line, ';');
 
+  // Todo texto del cliente (IN) se acumula siempre
   if (direccion === 'IN' && cleanText) {
     conv.datosCliente = appendWithSep(conv.datosCliente, cleanText, ';');
   }
 
+  // Si hay state, actualiza contexto de negocio
+  if (state) {
+    const fp = mapFlujoPrincipal(state.flowRoot, state.flujo);
+    if (fp) conv.flujoPrincipal = fp;
+
+    const mp = mapMetodoPago(state.pagoDetalle);
+    if (mp) conv.metodoPago = mp;
+
+    const prod = buildProductoResumenFromState(state);
+    if (prod) conv.producto = prod;
+
+    const ui = inferUltimaInteraccion(state);
+    if (ui) conv.ultimaInteraccion = ui;
+  }
+
+  // Adjuntos: guardamos URL descargable (si se puede), si no, fallback al endpoint por ID
   if (msgType && msgType !== 'text' && mediaId) {
-    const mediaUrl = `https://graph.facebook.com/v19.0/${mediaId}`;
-    conv.adjuntos = appendWithSep(conv.adjuntos, mediaUrl, ';');
+    const downloadUrl = await getMediaDownloadUrl(mediaId);
+    const storeUrl = downloadUrl || `https://graph.facebook.com/v19.0/${mediaId}`;
+    conv.adjuntos = appendWithSep(conv.adjuntos, storeUrl, ';');
   }
 
   const data = {
+    fechaHora: stamp,
+    numeroWhatsapp: waId,
+    waId,
+    flujoPrincipal: conv.flujoPrincipal || '',
+    metodoPago: conv.metodoPago || '',
+    producto: conv.producto || '',
+    ultimaInteraccion: conv.ultimaInteraccion || '',
     log: conv.log || '',
     datosCliente: conv.datosCliente || '',
     adjuntos: conv.adjuntos || '',
+    // compatibilidad
     fechaISO: stamp,
-    waId
+    messageId: messageId || '',
+    direccion: direccion || ''
   };
 
   const row = headers ? buildRowFromHeaders(headers, data) : null;
@@ -524,11 +580,18 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
     headers,
     row,
     waId,
-    ['waid','wa_id','wa id','numero de whatsapp','telefono']
+    ['waid','wa_id','wa id','wald','numero de whatsapp','número de whatsapp','telefono','teléfono']
   );
-}
 
-// Si en algún momento quieres registrar un pedido, esta función intenta adaptarse a los encabezados de la pestaña "Pedidos".
+  // Si el pedido ya fue finalizado, cualquier mensaje/adjunto adicional debe actualizar el pedido activo
+  if (!__updatingPedidoFromConv && conv.pedidoFinalizado && conv.currentOrderId) {
+    __updatingPedidoFromConv = true;
+    try {
+      await logPedidoFlexible({ waId, orderId: conv.currentOrderId });
+    } catch (e) {}
+    __updatingPedidoFromConv = false;
+  }
+}
 
 async function notifyVendedoresNuevoPedido(pedido) {
   // Configura en Render: SELLER_NUMBERS=57300xxxxxxx,57311yyyyyyy (con código país)
@@ -564,6 +627,8 @@ async function notifyVendedoresNuevoPedido(pedido) {
 
 
 
+
+
 async function logPedidoFlexible(pedidoData) {
   const sheetName = 'Pedidos';
   const headers = await getSheetHeaders(sheetName);
@@ -572,47 +637,35 @@ async function logPedidoFlexible(pedidoData) {
   const waId = pedidoData.waId || '';
   const conv = ensureConv(waId);
 
-  // ===== HISTORIAL DE PEDIDOS =====
-  // Un cliente puede hacer muchos pedidos. Para evitar "doble registro" del MISMO pedido,
-  // usamos un orderId estable por pedido, guardado en memoria por un tiempo.
-  const now = Date.now();
-  const TTL_MS = 20 * 60 * 1000; // 20 minutos: si vuelve a finalizar dentro de este tiempo, se considera el mismo pedido
-  if (!conv.currentOrderId || !conv.currentOrderCreatedAt || (now - conv.currentOrderCreatedAt) > TTL_MS) {
-    conv.currentOrderId = `ORD-${waId}-${now}`;
-    conv.currentOrderCreatedAt = now;
-  }
-  const orderId = pedidoData.orderId || conv.currentOrderId;
+  const producto = (pedidoData.producto || conv.producto || '').toString().trim();
+  const metodoPago = (pedidoData.metodoPago || conv.metodoPago || '').toString().trim();
 
+  // Solo guardamos pedido si ya hay producto + método de pago
+  if (!producto || !metodoPago) return;
+
+  const orderId = pedidoData.orderId || conv.currentOrderId || `ORD-${waId}-${Date.now()}`;
+  conv.currentOrderId = orderId;
+
+  const stamp = nowISO();
   const data = {
-    // Campos solicitados
-    fechaHora: nowISO(),
-    waId,
+    orderId,
+    fechaHora: stamp,
     numeroWhatsapp: waId,
     datosCliente: conv.datosCliente || '',
-    producto: conv.producto || '',
-    metodoPago: conv.metodoPago || '',
-    adjuntos: conv.adjuntos || '',
-    // Campo recomendado para historial y deduplicación
-    orderId
+    producto,
+    metodoPago,
+    adjuntos: conv.adjuntos || ''
   };
 
   const row = buildRowFromHeaders(headers, data);
   if (!row) return;
 
-  // Si la hoja tiene una columna order_id / pedido_id, hacemos UPSERT por orderId (evita duplicados del mismo pedido)
   const headersNorm = headers.map(h => (h || '').toString().toLowerCase().trim());
   const hasOrderId = headersNorm.includes('order_id') || headersNorm.includes('pedido_id') || headersNorm.includes('orderid');
 
   if (hasOrderId) {
-    await upsertRowToSheet(
-      sheetName,
-      headers,
-      row,
-      orderId,
-      ['order_id','pedido_id','orderid']
-    );
+    await upsertRowToSheet(sheetName, headers, row, orderId, ['order_id','pedido_id','orderid']);
   } else {
-    // Si no existe la columna, hacemos append (historial) — pero puede duplicarse si el finalize se dispara 2 veces
     await appendRowToSheet(sheetName, row);
   }
 }
@@ -699,7 +752,28 @@ async function sendMessage(to, text, opts = {}) {
     if (!opts.skipLog) {
       logConversacion({ direccion: 'OUT', waId: to, messageId: outId, texto: text, extra: '' }).catch(()=>{});
     }
-  } catch (error) {
+  
+
+    // Si el bot acaba de confirmar recepción de datos (mensaje final), marcamos pedido finalizado
+    // y registramos/actualizamos el pedido (historial) con order_id.
+    try {
+      const lower = (text || '').toString().toLowerCase();
+      if (lower.includes('gracias por enviar tus datos')) {
+        const conv = ensureConv(to);
+        conv.pedidoFinalizado = true;
+        // Genera orderId si no existe o si ya expiró (nuevo pedido)
+        const now = Date.now();
+        const TTL_MS = 20 * 60 * 1000;
+        if (!conv.currentOrderId || !conv.currentOrderCreatedAt || (now - conv.currentOrderCreatedAt) > TTL_MS) {
+          conv.currentOrderId = `ORD-${to}-${now}`;
+          conv.currentOrderCreatedAt = now;
+        }
+        await logPedidoFlexible({ waId: to, orderId: conv.currentOrderId });
+      }
+    } catch(e) {
+      // no bloquea
+    }
+} catch (error) {
     console.error('❌ Error al enviar mensaje:', error.response?.data || error.message);
   }
 }
