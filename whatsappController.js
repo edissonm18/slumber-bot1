@@ -4,6 +4,185 @@ const { google } = require('googleapis');
 const userStates = {};
 const messageHistory = new Set();
 
+
+// ================== CONVERSATION CACHE (log completo / datos / adjuntos) ==================
+// Mantiene contexto incluso si el flujo se reinicia o se borra userStates[waId]
+const conversationCache = {
+  // waId: { log: string, adjuntos: string, datosCliente: string, flujoPrincipal: string, metodoPago: string, producto: string, ultimaInteraccion: string }
+};
+
+function nowISO() {
+  return new Date().toISOString();
+}
+
+function ensureConv(waId) {
+  if (!conversationCache[waId]) {
+    conversationCache[waId] = {
+      log: '',
+      adjuntos: '',
+      datosCliente: '',
+      flujoPrincipal: '',
+      metodoPago: '',
+      producto: '',
+      ultimaInteraccion: ''
+    };
+  }
+  return conversationCache[waId];
+}
+
+function appendWithSep(current, piece, sep = ';') {
+  const p = (piece || '').toString().trim();
+  if (!p) return current || '';
+  if (!current) return p;
+  // evita duplicar separadores
+  return `${current}${sep}${p}`;
+}
+
+function mapFlujoPrincipal(flowRoot, flujoActual) {
+  const key = (flowRoot || flujoActual || '').toString().toLowerCase().trim();
+  switch (key) {
+    case 'colchon':
+    case 'colchones':
+      return '1️⃣ Colchones — tipos, medidas y precios';
+    case 'salas':
+    case 'sofas':
+    case 'sofa':
+    case 'sofacama':
+    case 'sofa_cama':
+      return '2️⃣ Salas y sofá camas';
+    case 'comedor':
+    case 'comedores':
+    case 'muebles':
+      return '3️⃣ Comedores y muebles';
+    case 'almohada':
+    case 'almohadas':
+    case 'protector':
+    case 'protectores':
+      return '4️⃣ Almohadas y protectores';
+    case 'promociones':
+    case 'promo':
+    case 'promocion':
+      return '5️⃣ Promociones';
+    case 'pago':
+    case 'checkout':
+      return '6️⃣ Pagos y financiación';
+    case 'soporte':
+    case 'soporte_cliente':
+      return '7️⃣ Soporte al cliente (garantía, seguimiento)';
+    case 'manual':
+      return 'Atención humana';
+    default:
+      // fallback
+      return key ? key : '';
+  }
+}
+
+function mapMetodoPago(pagoDetalle) {
+  const key = (pagoDetalle || '').toString().toLowerCase().trim();
+  switch (key) {
+    case 'contraentrega':
+      return '1️⃣ Pago contraentrega';
+    case 'addi':
+      return '2️⃣ Financiación con ADDI';
+    case 'vanti':
+      return '3️⃣ Crédito VANTI';
+    case 'anticipado':
+      return '4️⃣ Pago anticipado (transferencia)';
+    case 'tarjeta_bold':
+      return '5️⃣ Pago con tarjeta (crédito/débito) - Link Bold';
+    default:
+      return '';
+  }
+}
+
+function buildProductoResumenFromState(state) {
+  if (!state) return '';
+  const flowRoot = (state.flowRoot || state.flujo || '').toString().toLowerCase();
+
+  // Colchones: tipo + medida + dureza + precio (si existe)
+  if (flowRoot.includes('colch')) {
+    const tipo = state.tipo ? `Colchón ${state.tipo}` : 'Colchón';
+    const medida = state.medida ? `Medida: ${state.medida}` : '';
+    const firmeza = state.dureza ? `Firmeza: ${state.dureza}` : '';
+    // Precio: si existe en state.precioFinal (no siempre) o lo calculamos luego al final
+    return [tipo, medida, firmeza].filter(Boolean).join(' | ');
+  }
+
+  // Basecama
+  if (flowRoot.includes('base')) {
+    const t = state.basecamaTipo ? `Base cama: ${state.basecamaTipo}` : 'Base cama';
+    const medida = state.medida ? `Medida: ${state.medida}` : '';
+    return [t, medida].filter(Boolean).join(' | ');
+  }
+
+  // Cabecero
+  if (flowRoot.includes('cabec')) {
+    const t = state.cabeceroTipo ? `Cabecero: ${state.cabeceroTipo}` : 'Cabecero';
+    const medida = state.medida ? `Medida: ${state.medida}` : '';
+    return [t, medida].filter(Boolean).join(' | ');
+  }
+
+  // Salas / muebles
+  if (flowRoot.includes('sala') || flowRoot.includes('mueble')) {
+    const t = state.muebleTipo ? `Sala/Mueble: ${state.muebleTipo}` : 'Sala/Mueble';
+    const prod = state.muebleProducto ? `Producto: ${state.muebleProducto}` : '';
+    return [t, prod].filter(Boolean).join(' | ');
+  }
+
+  // Comedores
+  if (flowRoot.includes('comedor')) {
+    const t = state.comedorTipo ? `Comedor: ${state.comedorTipo}` : 'Comedor';
+    const prod = state.comedorProducto ? `Producto: ${state.comedorProducto}` : '';
+    return [t, prod].filter(Boolean).join(' | ');
+  }
+
+  // Almohadas / protectores
+  if (flowRoot.includes('almoh') || flowRoot.includes('protector')) {
+    const t = state.almohadaTipo ? `Almohada: ${state.almohadaTipo}` : '';
+    const prod = state.almohadaProducto ? `Producto: ${state.almohadaProducto}` : '';
+    const prot = state.protectorKey ? `Protector: ${state.protectorKey}` : '';
+    const medida = state.protectorSize ? `Medida: ${state.protectorSize}` : (state.medida ? `Medida: ${state.medida}` : '');
+    return [t, prod, prot, medida].filter(Boolean).join(' | ');
+  }
+
+  // Promociones
+  if (flowRoot.includes('promo')) {
+    const prod = state.promoProducto ? `Promo: ${state.promoProducto}` : 'Promoción';
+    return prod;
+  }
+
+  // Soporte
+  if (flowRoot.includes('soporte')) {
+    const s = state.soporteSolicitud ? `Soporte: ${state.soporteSolicitud}` : 'Soporte';
+    return s;
+  }
+
+  return '';
+}
+
+function inferUltimaInteraccion(state) {
+  if (!state) return '';
+  // Intenta describir el paso del negocio de forma entendible
+  if (state.flujo === 'manual') return 'Atención humana';
+  if (state.flujo === 'pago') {
+    if (state.pagoStep === 'datos') return 'Datos del cliente';
+    if (state.pagoStep === 'metodo') return 'Método de pago';
+    if (state.pagoStep) return `Pago: ${state.pagoStep}`;
+    return 'Pagos y financiación';
+  }
+  if (state.basecamaTipo || state.basecamaProducto || state.basecama) return 'Base cama';
+  if (state.cabeceroTipo || state.cabecero) return 'Cabecero';
+  if (state.almohadaTipo || state.almohadaProducto) return 'Almohadas';
+  if (state.protectorStep || state.protectorKey) return 'Protectores';
+  if (state.comedorTipo || state.comedorProducto) return 'Comedores';
+  if (state.muebleTipo || state.muebleProducto) return 'Salas y muebles';
+  if (state.promoProducto || state.promocionMostrada) return 'Promociones';
+  if (state.soporteSolicitud || state.soporteDatos) return 'Soporte al cliente';
+  if (state.tipo) return 'Colchones';
+  return '';
+}
+// ================== FIN CONVERSATION CACHE ==================
+
 const sheetsCache = {
   client: null,
   headers: {} // { sheetName: [header1, ...] }
@@ -95,6 +274,7 @@ function buildRowFromHeaders(headers, data) {
     else if (h === 'telefono' || h === 'teléfono') row[i] = data.telefono || data.waId || '';
     // Campos extendidos (si existen en tus hojas nuevas)
     else if (h === 'evento') row[i] = data.evento || '';
+    else if (h === 'medio_pago' || h === 'metodo_pago' || h === 'método de pago' || h === 'metodo de pago') row[i] = data.medioPago || data.pago || '';
     else if (h === 'estado_conversacion' || h === 'estado conversación' || h === 'estado') row[i] = data.estadoConversacion || data.estado || '';
     else if (h === 'ultimo_mensaje' || h === 'último mensaje') row[i] = data.ultimoMensaje || data.texto || '';
     else if (h === 'ultima_direccion' || h === 'última dirección') row[i] = data.ultimaDireccion || data.direccion || '';
@@ -105,8 +285,19 @@ function buildRowFromHeaders(headers, data) {
     else if (h === 'ciudad') row[i] = data.ciudad || '';
     else if (h === 'barrio') row[i] = data.barrio || '';
     else if (h === 'direccion_entrega' || h === 'dirección entrega') row[i] = data.direccionEntrega || data.direccion || '';
-  }
 
+// === NUEVOS CAMPOS (Hoja Conversaciones / Pedidos) ===
+else if (h === 'fecha y hora' || h === 'fecha_hora' || h === 'fechahora') row[i] = data.fechaHora || data.fechaISO || '';
+else if (h === 'numero de whatsapp' || h === 'número de whatsapp' || h === 'numero_whatsapp' || h === 'whatsapp' ) row[i] = data.numeroWhatsapp || data.waId || '';
+else if (h === 'flujo principal' || h === 'flujo_principal') row[i] = data.flujoPrincipal || data.flujo || '';
+else if (h === 'metodo de pago' || h === 'método de pago' || h === 'metodo_pago' || h === 'medio_pago') row[i] = data.metodoPago || '';
+else if (h === 'producto') row[i] = data.producto || '';
+else if (h === 'ultima interaccion' || h === 'última interacción' || h === 'ultima_interaccion') row[i] = data.ultimaInteraccion || data.step || '';
+else if (h === 'log') row[i] = data.log || '';
+else if (h === 'datos del cliente' || h === 'datos_cliente') row[i] = data.datosCliente || '';
+else if (h === 'adjuntos') row[i] = data.adjuntos || '';
+
+  }
   return row;
 }
 
@@ -242,71 +433,135 @@ async function logEventoFlexible(eventData) {
 }
 // ================== FIN SHEETS: UPSERT ==================
 
+
+function getFriendlyFlowName(flow) {
+  const map = {
+    colchon: 'Colchones',
+    salas: 'Salas / Sofá cama',
+    comedor: 'Comedores',
+    basecama: 'Base camas',
+    cabecero: 'Cabeceros',
+    almohada: 'Almohadas',
+    soporte: 'Soporte / Asesor',
+    promociones: 'Promociones',
+    checkout: 'Compra'
+  };
+  return map[flow] || (flow ? flow.toString() : '');
+}
+
+function getFriendlyStepName(flow, step) {
+  // step interno -> nombre entendible
+  const map = {
+    // Pago
+    metodo: 'Elegir medio de pago',
+    info: 'Confirmar datos',
+    datos: 'Confirmar datos',
+    final: 'Finalizado',
+    // Protector / complementos
+    elegir: 'Elegir opción',
+  };
+  const s = map[step] || (step ? step.toString() : '');
+  // Si estamos en pago, lo etiquetamos más claro
+  if (flow === 'pago' || flow === 'pago_info' || flow === 'pago_anticipado_info') {
+    return s ? `Pago: ${s}` : 'Pago';
+  }
+  return s;
+}
 function getFlowStepForLog(state) {
   if (!state) return '';
   const flujo = state.flujo || '';
-  if (flujo === 'pago') return state.pagoStep || '';
-  if (flujo === 'pago_info') return state.pagoInfoStep || '';
-  if (flujo === 'pago_anticipado_info') return state.pagoAnticipadoStep || '';
+  if (flujo === 'pago') return state.pagoStep || 'metodo';
+  if (flujo === 'pago_info') return state.pagoInfoStep || 'info';
+  if (flujo === 'pago_anticipado_info') return state.pagoAnticipadoStep || 'info';
   if (flujo === 'protector') return state.protectorStep || '';
-  // otros flujos sin step específico
+  // Para flujos de producto, si ya hay selección, lo reflejamos en un texto corto
+  if (flujo === 'colchon') return state.tipo ? `Colchón: ${state.tipo}` : (state.medida ? `Medida: ${state.medida}` : '');
+  if (flujo === 'salas') return state.salaProducto ? `Sala: ${state.salaProducto}` : (state.salaTipo || '');
+  if (flujo === 'comedor') return state.comedorProducto ? `Comedor: ${state.comedorProducto}` : (state.comedorTipo || '');
+  if (flujo === 'basecama') return state.basecamaProducto ? `Base: ${state.basecamaProducto}` : (state.basecamaTipo || '');
+  if (flujo === 'cabecero') return state.cabecero ? `Cabecero: ${state.cabecero}` : (state.cabeceroTipo || '');
+  if (flujo === 'almohada') return state.almohadaProducto ? `Almohada: ${state.almohadaProducto}` : (state.almohadaTipo || '');
+  if (flujo === 'soporte') return state.soporteSolicitud ? `Soporte: ${state.soporteSolicitud}` : '';
   return '';
 }
 
 
-async function logConversacion({ direccion, waId, messageId, texto, extra }) {
-  // IMPORTANTE:
-  // Antes se hacía append por cada mensaje -> generaba desorden y lentitud.
-  // Ahora hacemos UPSERT (1 fila por cliente) actualizando la información más reciente.
+
+async function logConversacion({ direccion, waId, messageId, texto, extra, msgType = 'text', mediaId = '', mediaCaption = '' }) {
+  // 1 fila por cliente (UPSERT). Además guardamos log completo, datos y adjuntos acumulados.
   const sheetName = 'Conversaciones';
   const headers = await getSheetHeaders(sheetName);
   const state = userStates[waId] || null;
+  const conv = ensureConv(waId);
 
-  // Estado de conversación sugerido
-  const estadoConversacion = (state?.flujo === 'manual') ? 'manual' : (state?.flujo ? 'activa' : 'inicio');
+  // Actualizamos cache con contexto actual si existe state
+  if (state) {
+    conv.flujoPrincipal = mapFlujoPrincipal(state.flowRoot, state.flujo);
+    conv.metodoPago = mapMetodoPago(state.pagoDetalle);
+    const prod = buildProductoResumenFromState(state);
+    if (prod) conv.producto = prod;
+    const ui = inferUltimaInteraccion(state);
+    if (ui) conv.ultimaInteraccion = ui;
+  }
+
+  // Log completo con separadores ';'
+  const stamp = nowISO();
+  const who = direccion === 'IN' ? 'IN' : 'OUT';
+  const line = `${who} ${stamp}: ${(texto || '').toString().replace(/\s+/g,' ').trim()}`;
+  conv.log = appendWithSep(conv.log, line, ';');
+
+  // Adjuntos: guardamos tipo + id + caption (si aplica)
+  if (msgType && msgType !== 'text' && msgType !== 'unknown') {
+    const adj = `${msgType.toUpperCase()}${mediaId ? `#${mediaId}` : ''}${mediaCaption ? `(${mediaCaption})` : ''}`;
+    conv.adjuntos = appendWithSep(conv.adjuntos, adj, ';');
+  }
+
+  // Datos del cliente: heuristic — cuando el flujo esté en pago->datos o soporte->datos, guardamos el texto IN como datos
+  if (direccion === 'IN' && state) {
+    const isDatosPago = state.flujo === 'pago' && state.pagoStep === 'datos';
+    const isDatosSoporte = !!state.soporteDatos; // cuando esté pidiendo/capturando datos en soporte
+    if (isDatosPago || isDatosSoporte) {
+      conv.datosCliente = appendWithSep(conv.datosCliente, (texto || '').toString().trim(), ';');
+    }
+  }
+
+  conv.ultimaInteraccion = conv.ultimaInteraccion || (state ? inferUltimaInteraccion(state) : conv.ultimaInteraccion);
+  conv.ultimaInteraccion = conv.ultimaInteraccion || (conv.metodoPago ? 'Método de pago' : '');
 
   const data = {
-    // Campos básicos (compatibles con tu hoja actual)
-    fechaISO: new Date().toISOString(),
-    direccion: direccion || '',
-    waId: waId || '',
+    fechaHora: stamp,
+    waId,
+    numeroWhatsapp: waId,
+    flujoPrincipal: conv.flujoPrincipal || '',
+    metodoPago: conv.metodoPago || '',
+    producto: conv.producto || '',
+    ultimaInteraccion: conv.ultimaInteraccion || '',
+    log: conv.log || '',
+    datosCliente: conv.datosCliente || '',
+    adjuntos: conv.adjuntos || '',
+    // compatibilidad antigua
+    fechaISO: stamp,
+    direccion,
     messageId: messageId || '',
     flujo: state?.flujo || '',
-    step: getFlowStepForLog(state),
-    texto: (texto || '').toString(),
-    extra: extra ? (typeof extra === 'string' ? extra : JSON.stringify(extra)) : '',
-
-    // Campos extendidos (si existen en tu nueva hoja)
-    estadoConversacion,
+    step: inferUltimaInteraccion(state) || '',
     ultimoMensaje: (texto || '').toString(),
     ultimaDireccion: direccion || '',
-    actualizadoEn: new Date().toISOString(),
-    ultimaInteraccion: new Date().toISOString(),
-    // Si más adelante capturas nombre/ciudad/dirección en el flujo, se pueden mapear aquí:
-    cliente: state?.nombre || state?.cliente || '',
-    ciudad: state?.ciudad || '',
-    barrio: state?.barrio || '',
-    direccionEntrega: state?.direccionEntrega || state?.direccion || ''
+    extra: extra ? (typeof extra === 'string' ? extra : JSON.stringify(extra)) : ''
   };
 
-  // Si no hay headers, hacemos fallback (pero ideal es que sí existan)
-  const row = headers ? buildRowFromHeaders(headers, data) : [
-    data.fechaISO, data.direccion, data.waId, data.messageId, data.flujo, data.step, data.texto, data.extra
-  ];
-
+  const row = headers ? buildRowFromHeaders(headers, data) : null;
   if (!row) return;
 
   if (headers && headers.length) {
-    // UPSERT por waId
     await upsertRowToSheet(
       sheetName,
       headers,
       row,
       waId,
-      ['waid','wa_id','wa id','telefono','teléfono']
+      ['waid','wa_id','wa id','numero de whatsapp','número de whatsapp','telefono','teléfono']
     );
   } else {
-    // Fallback: append
     await appendRowToSheet(sheetName, row);
   }
 }
@@ -344,23 +599,33 @@ async function notifyVendedoresNuevoPedido(pedido) {
 }
 
 // Si en algún momento quieres registrar un pedido, esta función intenta adaptarse a los encabezados de la pestaña "Pedidos".
+
 async function logPedidoFlexible(pedidoData) {
   const sheetName = 'Pedidos';
   const headers = await getSheetHeaders(sheetName);
   if (!headers) return;
 
+  const waId = pedidoData.waId || '';
+  const conv = ensureConv(waId);
+
   const data = {
-    fechaISO: new Date().toISOString(),
-    waId: pedidoData.waId || '',
-    telefono: pedidoData.telefono || pedidoData.waId || '',
+    fechaHora: nowISO(),
+    waId,
+    numeroWhatsapp: waId,
+    // En esta parte van a ser todos los datos que me suministre el cliente
+    datosCliente: pedidoData.datosCliente || conv.datosCliente || '',
+    // Producto con toda la info posible
+    producto: pedidoData.producto || conv.producto || '',
+    metodoPago: pedidoData.metodoPago || conv.metodoPago || '',
+    adjuntos: pedidoData.adjuntos || conv.adjuntos || '',
+    // Compatibilidad
+    fechaISO: nowISO(),
+    telefono: waId,
+    nombre: pedidoData.nombre || '',
     flujo: pedidoData.flujo || '',
-    producto: pedidoData.producto || '',
-    medida: pedidoData.medida || '',
     precio: pedidoData.precio || '',
     pago: pedidoData.pago || '',
-    // Estado recomendado para control interno
     estado: pedidoData.estado || 'nuevo',
-    nombre: pedidoData.nombre || '',
     texto: pedidoData.texto || '',
     extra: pedidoData.extra || ''
   };
@@ -369,15 +634,13 @@ async function logPedidoFlexible(pedidoData) {
   if (row) {
     await appendRowToSheet(sheetName, row);
     // Notificación a vendedores (si está configurado)
-    await notifyVendedoresNuevoPedido(data).catch(()=>{});
-    // Evento opcional
-    await logEventoFlexible({
-      waId: data.waId,
-      evento: 'pedido_finalizado',
-      flujo: data.flujo,
-      step: 'finalizar_pedido',
-      texto: data.producto || '',
-      extra: data.extra || ''
+    await notifyVendedoresNuevoPedido({
+      waId,
+      nombre: pedidoData.nombre || '',
+      producto: data.producto,
+      pago: data.metodoPago,
+      medida: '',
+      precio: pedidoData.precio || ''
     }).catch(()=>{});
   }
 }
@@ -390,7 +653,18 @@ function iniciarFlujo(from, flujo) {
   if (!userStates[from]) {
     userStates[from] = {};
   }
-  userStates[from].flujo = flujo;
+  // Guardamos el "flujo raíz" (categoría principal) para que en Sheets sea entendible:
+  // colchon / salas / comedor / basecama / cabecero / almohada / soporte / promociones
+  // Cuando entramos a subflujos de pago, NO queremos perder el flujo raíz.
+  const subFlujosPago = new Set(['pago', 'pago_info', 'pago_anticipado_info']);
+  if (!subFlujosPago.has(flujo)) {
+    userStates[from].flowRoot = flujo;
+  } else if (!userStates[from].flowRoot) {
+    // Si por algún motivo entramos a pago sin flowRoot, dejamos algo razonable
+    userStates[from].flowRoot = 'checkout';
+  }
+
+  userStates[from].flujo = flujo; // fase actual
 }
 
 // Utilidad: formatea valores como moneda con separadores de miles
@@ -554,13 +828,29 @@ exports.handleMessage = (req, res) => {
   if (!value?.messages || !Array.isArray(value.messages)) return res.sendStatus(200);
 
   const message = value.messages[0];
-  if (!message?.id || message.type !== 'text') return res.sendStatus(200);
+  if (!message?.id) return res.sendStatus(200);
 
   const from = message.from;
-  const text = message.text?.body?.toLowerCase().trim();
-  if (!text) return res.sendStatus(200);
 
-  console.log(`[${new Date().toISOString()}] ${from}: "${text}" (ID: ${message.id})`);
+  // Soportamos texto y medios (imagen, audio, documento, etc.)
+  const msgType = message.type || 'unknown';
+  const rawText = (msgType === 'text') ? (message.text?.body || '') : '';
+  const textNormalized = rawText.toLowerCase().trim();
+
+  // Texto a registrar en Sheets (si es medio, registramos algo entendible + caption si existe)
+  let textoParaLog = '';
+  if (msgType === 'text') {
+    textoParaLog = rawText.trim();
+  } else {
+    const caption =
+      message.image?.caption ||
+      message.video?.caption ||
+      message.document?.caption ||
+      '';
+    textoParaLog = `[${msgType.toUpperCase()}]` + (caption ? ` ${caption}` : '');
+  }
+
+  console.log(`[${new Date().toISOString()}] ${from}: "${(msgType==='text'?textNormalized:textoParaLog)}" (ID: ${message.id}, type: ${msgType})`);
 
   if (messageHistory.has(message.id)) {
     console.log(`🔁 Mensaje duplicado ignorado: ${message.id}`);
@@ -570,10 +860,11 @@ exports.handleMessage = (req, res) => {
   setTimeout(() => messageHistory.delete(message.id), 5 * 60 * 1000);
 
   // Registramos el mensaje entrante en Google Sheets (no bloquea la respuesta del webhook)
-  logConversacion({ direccion: 'IN', waId: from, messageId: message.id, texto: text, extra: '' }).catch(()=>{});
+  logConversacion({ direccion: 'IN', waId: from, messageId: message.id, texto: textoParaLog, extra: '', msgType: msgType, mediaId: (message?.image?.id||message?.video?.id||message?.audio?.id||message?.document?.id||message?.sticker?.id||''), mediaCaption: (message?.image?.caption||message?.video?.caption||message?.document?.caption||'') }).catch(()=>{});
 
   res.sendStatus(200);
-  handleTextMessageAsync(from, text);
+  if (msgType === 'text' && textNormalized) handleTextMessageAsync(from, textNormalized);
+  // Si es medio, por ahora solo lo registramos en Sheets para seguimiento (no afecta el flujo).
 };
 
 // Precios actualizados de colchones por medida según la lista proporcionada por el cliente.  Cada
