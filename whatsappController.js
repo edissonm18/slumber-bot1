@@ -296,9 +296,8 @@ else if (h === 'ultima interaccion' || h === 'última interacción' || h === 'ul
 else if (h === 'log') row[i] = data.log || '';
 else if (h === 'datos del cliente' || h === 'datos_cliente') row[i] = data.datosCliente || '';
 else if (h === 'adjuntos') row[i] = data.adjuntos || '';
-
-  }
     else if (h === 'order_id' || h === 'pedido_id' || h === 'orderid') row[i] = data.orderId || '';
+  }
   return row;
 }
 
