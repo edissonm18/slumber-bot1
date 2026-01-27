@@ -298,6 +298,7 @@ else if (h === 'datos del cliente' || h === 'datos_cliente') row[i] = data.datos
 else if (h === 'adjuntos') row[i] = data.adjuntos || '';
 
   }
+    else if (h === 'order_id' || h === 'pedido_id' || h === 'orderid') row[i] = data.orderId || '';
   return row;
 }
 
@@ -487,83 +488,45 @@ function getFlowStepForLog(state) {
 
 
 
+
 async function logConversacion({ direccion, waId, messageId, texto, extra, msgType = 'text', mediaId = '', mediaCaption = '' }) {
-  // 1 fila por cliente (UPSERT). Además guardamos log completo, datos y adjuntos acumulados.
   const sheetName = 'Conversaciones';
   const headers = await getSheetHeaders(sheetName);
-  const state = userStates[waId] || null;
   const conv = ensureConv(waId);
 
-  // Actualizamos cache con contexto actual si existe state
-  if (state) {
-    conv.flujoPrincipal = mapFlujoPrincipal(state.flowRoot, state.flujo);
-    conv.metodoPago = mapMetodoPago(state.pagoDetalle);
-    const prod = buildProductoResumenFromState(state);
-    if (prod) conv.producto = prod;
-    const ui = inferUltimaInteraccion(state);
-    if (ui) conv.ultimaInteraccion = ui;
-  }
-
-  // Log completo con separadores ';'
   const stamp = nowISO();
   const who = direccion === 'IN' ? 'IN' : 'OUT';
-  const line = `${who} ${stamp}: ${(texto || '').toString().replace(/\s+/g,' ').trim()}`;
+  const cleanText = (texto || '').toString().replace(/\s+/g,' ').trim();
+  const line = `${who} ${stamp}: ${cleanText}`;
   conv.log = appendWithSep(conv.log, line, ';');
 
-  // Adjuntos: guardamos tipo + id + caption (si aplica)
-  if (msgType && msgType !== 'text' && msgType !== 'unknown') {
-    const adj = `${msgType.toUpperCase()}${mediaId ? `#${mediaId}` : ''}${mediaCaption ? `(${mediaCaption})` : ''}`;
-    conv.adjuntos = appendWithSep(conv.adjuntos, adj, ';');
+  if (direccion === 'IN' && cleanText) {
+    conv.datosCliente = appendWithSep(conv.datosCliente, cleanText, ';');
   }
 
-  // Datos del cliente: heuristic — cuando el flujo esté en pago->datos o soporte->datos, guardamos el texto IN como datos
-  if (direccion === 'IN' && state) {
-    const isDatosPago = state.flujo === 'pago' && state.pagoStep === 'datos';
-    const isDatosSoporte = !!state.soporteDatos; // cuando esté pidiendo/capturando datos en soporte
-    if (isDatosPago || isDatosSoporte) {
-      conv.datosCliente = appendWithSep(conv.datosCliente, (texto || '').toString().trim(), ';');
-    }
+  if (msgType && msgType !== 'text' && mediaId) {
+    const mediaUrl = `https://graph.facebook.com/v19.0/${mediaId}`;
+    conv.adjuntos = appendWithSep(conv.adjuntos, mediaUrl, ';');
   }
-
-  conv.ultimaInteraccion = conv.ultimaInteraccion || (state ? inferUltimaInteraccion(state) : conv.ultimaInteraccion);
-  conv.ultimaInteraccion = conv.ultimaInteraccion || (conv.metodoPago ? 'Método de pago' : '');
 
   const data = {
-    fechaHora: stamp,
-    waId,
-    numeroWhatsapp: waId,
-    flujoPrincipal: conv.flujoPrincipal || '',
-    metodoPago: conv.metodoPago || '',
-    producto: conv.producto || '',
-    ultimaInteraccion: conv.ultimaInteraccion || '',
     log: conv.log || '',
     datosCliente: conv.datosCliente || '',
     adjuntos: conv.adjuntos || '',
-    // compatibilidad antigua
     fechaISO: stamp,
-    direccion,
-    messageId: messageId || '',
-    flujo: state?.flujo || '',
-    step: inferUltimaInteraccion(state) || '',
-    ultimoMensaje: (texto || '').toString(),
-    ultimaDireccion: direccion || '',
-    extra: extra ? (typeof extra === 'string' ? extra : JSON.stringify(extra)) : ''
+    waId
   };
 
   const row = headers ? buildRowFromHeaders(headers, data) : null;
   if (!row) return;
 
-  if (headers && headers.length) {
-    await upsertRowToSheet(
-      sheetName,
-      headers,
-      row,
-      waId,
-      ['waid','wa_id','wa id','numero de whatsapp','número de whatsapp','telefono','teléfono']
-    );
-  } else {
-    await appendRowToSheet(sheetName, row);
-  }
+  await upsertRowToSheet(
+    sheetName,
+    headers,
+    row,
+    waId,
+    ['waid','wa_id','wa id','numero de whatsapp','telefono']
+  );
 }
 
 // Si en algún momento quieres registrar un pedido, esta función intenta adaptarse a los encabezados de la pestaña "Pedidos".
@@ -600,6 +563,8 @@ async function notifyVendedoresNuevoPedido(pedido) {
 
 // Si en algún momento quieres registrar un pedido, esta función intenta adaptarse a los encabezados de la pestaña "Pedidos".
 
+
+
 async function logPedidoFlexible(pedidoData) {
   const sheetName = 'Pedidos';
   const headers = await getSheetHeaders(sheetName);
@@ -608,40 +573,48 @@ async function logPedidoFlexible(pedidoData) {
   const waId = pedidoData.waId || '';
   const conv = ensureConv(waId);
 
+  // ===== HISTORIAL DE PEDIDOS =====
+  // Un cliente puede hacer muchos pedidos. Para evitar "doble registro" del MISMO pedido,
+  // usamos un orderId estable por pedido, guardado en memoria por un tiempo.
+  const now = Date.now();
+  const TTL_MS = 20 * 60 * 1000; // 20 minutos: si vuelve a finalizar dentro de este tiempo, se considera el mismo pedido
+  if (!conv.currentOrderId || !conv.currentOrderCreatedAt || (now - conv.currentOrderCreatedAt) > TTL_MS) {
+    conv.currentOrderId = `ORD-${waId}-${now}`;
+    conv.currentOrderCreatedAt = now;
+  }
+  const orderId = pedidoData.orderId || conv.currentOrderId;
+
   const data = {
+    // Campos solicitados
     fechaHora: nowISO(),
     waId,
     numeroWhatsapp: waId,
-    // En esta parte van a ser todos los datos que me suministre el cliente
-    datosCliente: pedidoData.datosCliente || conv.datosCliente || '',
-    // Producto con toda la info posible
-    producto: pedidoData.producto || conv.producto || '',
-    metodoPago: pedidoData.metodoPago || conv.metodoPago || '',
-    adjuntos: pedidoData.adjuntos || conv.adjuntos || '',
-    // Compatibilidad
-    fechaISO: nowISO(),
-    telefono: waId,
-    nombre: pedidoData.nombre || '',
-    flujo: pedidoData.flujo || '',
-    precio: pedidoData.precio || '',
-    pago: pedidoData.pago || '',
-    estado: pedidoData.estado || 'nuevo',
-    texto: pedidoData.texto || '',
-    extra: pedidoData.extra || ''
+    datosCliente: conv.datosCliente || '',
+    producto: conv.producto || '',
+    metodoPago: conv.metodoPago || '',
+    adjuntos: conv.adjuntos || '',
+    // Campo recomendado para historial y deduplicación
+    orderId
   };
 
   const row = buildRowFromHeaders(headers, data);
-  if (row) {
+  if (!row) return;
+
+  // Si la hoja tiene una columna order_id / pedido_id, hacemos UPSERT por orderId (evita duplicados del mismo pedido)
+  const headersNorm = headers.map(h => (h || '').toString().toLowerCase().trim());
+  const hasOrderId = headersNorm.includes('order_id') || headersNorm.includes('pedido_id') || headersNorm.includes('orderid');
+
+  if (hasOrderId) {
+    await upsertRowToSheet(
+      sheetName,
+      headers,
+      row,
+      orderId,
+      ['order_id','pedido_id','orderid']
+    );
+  } else {
+    // Si no existe la columna, hacemos append (historial) — pero puede duplicarse si el finalize se dispara 2 veces
     await appendRowToSheet(sheetName, row);
-    // Notificación a vendedores (si está configurado)
-    await notifyVendedoresNuevoPedido({
-      waId,
-      nombre: pedidoData.nombre || '',
-      producto: data.producto,
-      pago: data.metodoPago,
-      medida: '',
-      precio: pedidoData.precio || ''
-    }).catch(()=>{});
   }
 }
 
