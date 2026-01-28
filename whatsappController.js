@@ -48,10 +48,6 @@ const conversationCache = {
   // waId: { log: string, adjuntos: string, datosCliente: string, flujoPrincipal: string, metodoPago: string, producto: string, ultimaInteraccion: string }
 };
 
-function nowISO() {
-  return new Date().toISOString();
-}
-
 function ensureConv(waId) {
   if (!conversationCache[waId]) {
     conversationCache[waId] = {
@@ -666,7 +662,7 @@ async function logPedidoFlexible(pedidoData) {
   const orderId = pedidoData.orderId || conv.currentOrderId || `ORD-${waId}-${Date.now()}`;
   conv.currentOrderId = orderId;
 
-  const stamp = nowISO();
+  const stamp = nowBogota();
   const data = {
     orderId,
     fechaHora: stamp,
@@ -792,6 +788,18 @@ async function sendMessage(to, text, opts = {}) {
           conv.currentOrderCreatedAt = now;
         }
         await logPedidoFlexible({ waId: to, orderId: conv.currentOrderId });
+
+        // Notificar a vendedores cuando se detecta un pedido finalizado
+        try {
+          await notifyVendedoresNuevoPedido({
+            waId: to,
+            producto: conv.producto || '',
+            pago: conv.metodoPago || ''
+          });
+        } catch (e) {
+          // no bloquea
+        }
+
         conv.pedidoLogged = true;
       }
     } catch(e) {
