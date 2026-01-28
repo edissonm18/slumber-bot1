@@ -1,6 +1,25 @@
 const axios = require('axios');
 
 
+
+
+function nowBogota() {
+  // Devuelve fecha/hora en zona horaria de Bogotá (America/Bogota) en formato YYYY-MM-DD HH:mm:ss
+  const d = new Date();
+  const parts = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'America/Bogota',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false
+  }).formatToParts(d).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function nowISO() {
+  // ISO (UTC) para trazabilidad técnica
+  return new Date().toISOString();
+}
+
 async function getMediaDownloadUrl(mediaId) {
   // WhatsApp Cloud API: obtener URL descargable del media
   // Requiere WHATSAPP_TOKEN válido.
@@ -522,8 +541,9 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const conv = ensureConv(waId);
   const state = userStates[waId] || null;
 
-  const stamp = nowISO();
-  const who = direccion === 'IN' ? 'IN' : 'OUT';
+  const stampISO = nowISO();
+  const stamp = nowBogota();
+const who = direccion === 'IN' ? 'IN' : 'OUT';
   const cleanText = (texto || '').toString().replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
   conv.log = appendWithSep(conv.log, line, ';');
@@ -567,7 +587,7 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
     datosCliente: conv.datosCliente || '',
     adjuntos: conv.adjuntos || '',
     // compatibilidad
-    fechaISO: stamp,
+    fechaISO: stampISO,
     messageId: messageId || '',
     direccion: direccion || ''
   };
@@ -761,6 +781,9 @@ async function sendMessage(to, text, opts = {}) {
       if (lower.includes('gracias por enviar tus datos')) {
         const conv = ensureConv(to);
         conv.pedidoFinalizado = true;
+        // Si ya registramos este pedido, no lo dupliques
+        if (conv.pedidoLogged && conv.currentOrderId) return;
+
         // Genera orderId si no existe o si ya expiró (nuevo pedido)
         const now = Date.now();
         const TTL_MS = 20 * 60 * 1000;
@@ -769,6 +792,7 @@ async function sendMessage(to, text, opts = {}) {
           conv.currentOrderCreatedAt = now;
         }
         await logPedidoFlexible({ waId: to, orderId: conv.currentOrderId });
+        conv.pedidoLogged = true;
       }
     } catch(e) {
       // no bloquea
