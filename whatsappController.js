@@ -48,14 +48,16 @@ const conversationCache = {
   // waId: { log: string, adjuntos: string, datosCliente: string, flujoPrincipal: string, metodoPago: string, producto: string, ultimaInteraccion: string }
 };
 
+function nowISO() {
+  return new Date().toISOString();
+}
+
 function ensureConv(waId) {
   if (!conversationCache[waId]) {
     conversationCache[waId] = {
       log: '',
       adjuntos: '',
       datosCliente: '',
-      datosClientePedido: '',
-      adjuntosPedido: '',
       flujoPrincipal: '',
       metodoPago: '',
       producto: '',
@@ -71,28 +73,6 @@ function appendWithSep(current, piece, sep = ';') {
   if (!current) return p;
   // evita duplicar separadores
   return `${current}${sep}${p}`;
-}
-
-
-function extractResumenPedidoFromText(fullText) {
-  if (!fullText) return '';
-  const text = fullText.toString();
-  const idx = text.indexOf('🛒 Resumen de tu pedido');
-  if (idx < 0) return '';
-  // Tomamos desde el marcador hasta antes de la sección de "Para finalizar" u otras secciones.
-  let chunk = text.slice(idx);
-
-  const cutMarkers = ['📝 Para finalizar', '✳', '🙏 Gracias', '↩ Escribe', '🧾', '✅'];
-  let cutPos = -1;
-  for (const m of cutMarkers) {
-    const p = chunk.indexOf(m);
-    if (p > 0) cutPos = (cutPos === -1) ? p : Math.min(cutPos, p);
-  }
-  if (cutPos > 0) chunk = chunk.slice(0, cutPos);
-
-  // Limpieza básica
-  chunk = chunk.replace(/\n{3,}/g, '\n\n').trim();
-  return chunk;
 }
 
 function mapFlujoPrincipal(flowRoot, flujoActual) {
@@ -158,28 +138,11 @@ function buildProductoResumenFromState(state) {
 
   // Colchones: tipo + medida + dureza + precio (si existe)
   if (flowRoot.includes('colch')) {
-    // Si ya tenemos un resumen armado (igual al enviado al cliente), úsalo para notificaciones y Sheets.
-    if (state.resumenTexto) {
-      const totalLine = state.totalTxt ? `💵 Total: ${state.totalTxt}` : '';
-      return ['🛒 Resumen de tu pedido:', state.resumenTexto, totalLine].filter(Boolean).join('\n');
-    }
-
-    const tipo = state.tipo ? `📦 Colchón: ${state.tipo}` : '📦 Colchón';
-    const medida = state.medida ? `${state.medida}` : '';
+    const tipo = state.tipo ? `Colchón ${state.tipo}` : 'Colchón';
+    const medida = state.medida ? `Medida: ${state.medida}` : '';
     const firmeza = state.dureza ? `Firmeza: ${state.dureza}` : '';
-
-    // Si hay base cama / cabecero seleccionados en el estado, intentamos incluirlos también.
-    const base = state.basecamaTipo ? `🛏️ Base cama: ${state.basecamaTipo}` : '';
-    const cab = state.cabeceroTipo ? `🛋️ Cabecero: ${state.cabeceroTipo}` : '';
-
-    const lineas = [
-      `${tipo}${medida ? ` ${medida}` : ''}${firmeza ? ` — ${firmeza}` : ''}`,
-      base,
-      cab
-    ].filter(Boolean);
-
-    return lineas.join(' | ');
-
+    // Precio: si existe en state.precioFinal (no siempre) o lo calculamos luego al final
+    return [tipo, medida, firmeza].filter(Boolean).join(' | ');
   }
 
   // Basecama
@@ -198,48 +161,16 @@ function buildProductoResumenFromState(state) {
 
   // Salas / muebles
   if (flowRoot.includes('sala') || flowRoot.includes('mueble')) {
-    // Si ya tenemos un resumen armado (por ejemplo: "* Sala: Sala Oslo — $2.490.000"), úsalo.
-    if (state.resumenTexto) {
-      const totalTxt = state.totalTxt ? `💵 Total: ${state.totalTxt}` : '';
-      return ['🛒 Resumen de tu pedido:', state.resumenTexto, totalTxt].filter(Boolean).join('\n');
-    }
-
-    // state.muebleProducto a veces es un objeto (ej: {nombre, precio}); lo convertimos a texto legible
-    let prodName = '';
-    let prodPrice = '';
-    const mp = state.muebleProducto;
-    if (mp && typeof mp === 'object') {
-      prodName = (mp.nombre || mp.name || mp.titulo || '').toString().trim();
-      const p = mp.precio ?? mp.price;
-      if (typeof p === 'number' && p > 0) prodPrice = `$${formatCurrency(p)}`;
-    } else if (mp) {
-      prodName = mp.toString().trim();
-    }
-
-    const prodLine = prodName ? `🛋️ Sala: ${prodName}${prodPrice ? ` — ${prodPrice}` : ''}` : '';
-    const totalLine = state.totalTxt ? `💵 Total: ${state.totalTxt}` : '';
-
-    // Formato como el mensaje al cliente (líneas), SIN "Sala/Mueble: ..."
-    return ['🛒 Resumen de tu pedido:', prodLine, totalLine].filter(Boolean).join('\n');
+    const t = state.muebleTipo ? `Sala/Mueble: ${state.muebleTipo}` : 'Sala/Mueble';
+    const prod = state.muebleProducto ? `Producto: ${state.muebleProducto}` : '';
+    return [t, prod].filter(Boolean).join(' | ');
   }
 
   // Comedores
   if (flowRoot.includes('comedor')) {
-    // state.comedorProducto puede ser objeto: {nombre, precio}
-    let nombre = '';
-    let precioTxt = '';
-    const cp = state.comedorProducto;
-    if (cp && typeof cp === 'object') {
-      nombre = (cp.nombre || cp.name || cp.titulo || '').toString().trim();
-      const p = cp.precio ?? cp.price;
-      if (typeof p === 'number' && p > 0) precioTxt = `$${formatCurrency(p)}`;
-    } else if (cp) {
-      nombre = cp.toString().trim();
-    }
-
-    const linea = nombre ? `🍽️ Comedor: ${nombre}${precioTxt ? ` — ${precioTxt}` : ''}` : '🍽️ Comedor';
-    const totalLine = state.totalTxt ? `💵 Total: ${state.totalTxt}` : (precioTxt ? `💵 Total: ${precioTxt}` : '');
-    return ['🛒 Resumen de tu pedido:', linea, totalLine].filter(Boolean).join('\n');
+    const t = state.comedorTipo ? `Comedor: ${state.comedorTipo}` : 'Comedor';
+    const prod = state.comedorProducto ? `Producto: ${state.comedorProducto}` : '';
+    return [t, prod].filter(Boolean).join(' | ');
   }
 
   // Almohadas / protectores
@@ -541,15 +472,6 @@ async function logEventoFlexible(eventData) {
     data.fechaISO, data.waId, data.evento, data.flujo, data.step, data.texto, data.extra
   ];
   if (row) await appendRowToSheet(sheetName, row);
-
-  // Si el pedido ya fue finalizado, cualquier texto/adjunto adicional debe quedar asociado al MISMO pedido (mismo order_id).
-  // Hacemos UPSERT en PEDIDOS para mantener "datos del cliente" y "adjuntos" actualizados.
-  try {
-    const conv2 = ensureConv(waId);
-    if (conv2.pedidoFinalizado && conv2.currentOrderId) {
-      await logPedidoFlexible({ waId, orderId: conv2.currentOrderId });
-    }
-  } catch(e) {}
 }
 // ================== FIN SHEETS: UPSERT ==================
 
@@ -622,22 +544,13 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const stampISO = nowISO();
   const stamp = nowBogota();
 const who = direccion === 'IN' ? 'IN' : 'OUT';
-  const rawText = (texto || '').toString();
-  const cleanText = rawText.replace(/\s+/g,' ').trim();
+  const cleanText = (texto || '').toString().replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
   conv.log = appendWithSep(conv.log, line, ';');
 
   // Todo texto del cliente (IN) se acumula siempre
   if (direccion === 'IN' && cleanText) {
     conv.datosCliente = appendWithSep(conv.datosCliente, cleanText, ';');
-  }
-
-  // Acumula datos SOLO del pedido actual (se reinicia con "inicio")
-  if (direccion === 'IN' && cleanText) {
-    const ctl = cleanText.toLowerCase();
-    if (!['inicio','menu','menú','volver'].includes(ctl)) {
-      conv.datosClientePedido = appendWithSep(conv.datosClientePedido, cleanText, ';');
-    }
   }
 
   // Si hay state, actualiza contexto de negocio
@@ -650,11 +563,6 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
 
     const prod = buildProductoResumenFromState(state);
     if (prod) conv.producto = prod;
-    // Si es un bloque de resumen, lo guardamos también como pedidoResumen (para notificación y pestaña Pedidos)
-    if (prod && (prod.includes('🛒 Resumen de tu pedido') || prod.includes('Resumen de tu pedido'))) {
-      conv.pedidoResumen = prod;
-    }
-
 
     const ui = inferUltimaInteraccion(state);
     if (ui) conv.ultimaInteraccion = ui;
@@ -665,7 +573,6 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     const downloadUrl = await getMediaDownloadUrl(mediaId);
     const storeUrl = downloadUrl || `https://graph.facebook.com/v19.0/${mediaId}`;
     conv.adjuntos = appendWithSep(conv.adjuntos, storeUrl, ';');
-    conv.adjuntosPedido = appendWithSep(conv.adjuntosPedido, storeUrl, ';');
   }
 
   const data = {
@@ -674,11 +581,11 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     waId,
     flujoPrincipal: conv.flujoPrincipal || '',
     metodoPago: conv.metodoPago || '',
-    producto: conv.pedidoResumen || conv.producto || '',
+    producto: conv.producto || '',
     ultimaInteraccion: conv.ultimaInteraccion || '',
     log: conv.log || '',
-    datosCliente: conv.datosClientePedido || conv.datosCliente || '',
-    adjuntos: conv.adjuntosPedido || conv.adjuntos || '',
+    datosCliente: conv.datosCliente || '',
+    adjuntos: conv.adjuntos || '',
     // compatibilidad
     fechaISO: stampISO,
     messageId: messageId || '',
@@ -716,59 +623,25 @@ async function notifyVendedoresNuevoPedido(pedido) {
   if (!nums.length) return;
 
   const prefix = (process.env.SELLER_NOTIFY_PREFIX || '').trim();
-
-  const wa = pedido.waId || 'N/D';
-
-  // Datos del cliente (todo lo que escribió, de inicio a fin)
-  const datosRaw = (pedido.datosCliente || '').toString().trim();
-  const datosFmt = datosRaw
-    ? datosRaw.split(';').map(s => s.trim()).filter(Boolean).map(s => `• ${s}`).join('\n')
-    : 'N/D';
-
-  // Producto: si ya viene como "Resumen de tu pedido", lo enviamos como bloque tal cual.
-  const prodRaw = (pedido.producto || '').toString().trim();
-  const prodBlock = prodRaw
-    ? (prodRaw.includes('Resumen de tu pedido') || prodRaw.includes('🛒') ? prodRaw : `Producto: ${prodRaw}`)
-    : 'N/D';
-
-  const pago = (pedido.pago || pedido.metodoPago || '').toString().trim();
-
-  const headerLines = [
+  const msgLines = [
     prefix ? prefix : '🆕 *Nuevo pedido finalizado*',
     '',
-    `📲 *WhatsApp cliente:* ${wa}`,
-    pago ? `💳 *Pago:* ${pago}` : '',
-    '',
-    `🛒 *Pedido:*
-${prodBlock}`,
+    `📞 *Cliente:* ${pedido.nombre || 'N/D'}`,
+    `📲 *WhatsApp:* ${pedido.waId || 'N/D'}`,
+    pedido.producto ? `🛒 *Producto:* ${pedido.producto}` : '',
+    pedido.medida ? `📏 *Medida:* ${pedido.medida}` : '',
+    (pedido.precio && pedido.precio !== '0') ? `💰 *Precio:* ${pedido.precio}` : '',
+    pedido.pago ? `💳 *Pago:* ${pedido.pago}` : '',
     '',
     '✅ Responde rápido para que el cliente no se enfríe.'
   ].filter(Boolean);
 
-  const headerText = headerLines.join('\n');
-
-  // Mensaje 2: datos completos del cliente (puede ser largo)
-  const datosLines = [
-    '🧾 *Datos del cliente (texto completo):*',
-    datosFmt
-  ];
-  const datosText = datosLines.join('\n');
-
+  const text = msgLines.join("\n");
   for (const n of nums) {
     // Enviamos sin log para no crear filas de "conversación" para vendedores
-    await sendMessage(n, headerText, { skipLog: true });
-
-    // WhatsApp tiene límites de tamaño; si es muy largo, lo partimos en 2.
-    const MAX_LEN = 3500;
-    if (datosText.length <= MAX_LEN) {
-      await sendMessage(n, datosText, { skipLog: true });
-    } else {
-      await sendMessage(n, datosText.slice(0, MAX_LEN), { skipLog: true });
-      await sendMessage(n, '🧾 (continuación)\n' + datosText.slice(MAX_LEN), { skipLog: true });
-    }
+    await sendMessage(n, text, { skipLog: true });
   }
 }
-
 
 // Si en algún momento quieres registrar un pedido, esta función intenta adaptarse a los encabezados de la pestaña "Pedidos".
 
@@ -784,25 +657,24 @@ async function logPedidoFlexible(pedidoData) {
   const waId = pedidoData.waId || '';
   const conv = ensureConv(waId);
 
-  const producto = (pedidoData.producto || conv.pedidoResumen || conv.producto || '').toString().trim();
+  const producto = (pedidoData.producto || conv.producto || '').toString().trim();
   const metodoPago = (pedidoData.metodoPago || conv.metodoPago || '').toString().trim();
 
-  // Guardamos pedido aunque falte producto/pago; se podrá completar con el historial del flujo.
-  const productoSafe = producto || 'N/D';
-  const metodoPagoSafe = metodoPago || 'N/D';
+  // Solo guardamos pedido si ya hay producto + método de pago
+  if (!producto || !metodoPago) return;
 
   const orderId = pedidoData.orderId || conv.currentOrderId || `ORD-${waId}-${Date.now()}`;
   conv.currentOrderId = orderId;
 
-  const stamp = nowBogota();
+  const stamp = nowISO();
   const data = {
     orderId,
     fechaHora: stamp,
     numeroWhatsapp: waId,
-    datosCliente: conv.datosClientePedido || '',
-    producto: productoSafe,
-    metodoPago: metodoPagoSafe,
-    adjuntos: conv.adjuntosPedido || conv.adjuntos || ''
+    datosCliente: conv.datosCliente || '',
+    producto,
+    metodoPago,
+    adjuntos: conv.adjuntos || ''
   };
 
   const row = buildRowFromHeaders(headers, data);
@@ -830,30 +702,7 @@ function iniciarFlujo(from, flujo) {
   // colchon / salas / comedor / basecama / cabecero / almohada / soporte / promociones
   // Cuando entramos a subflujos de pago, NO queremos perder el flujo raíz.
   const subFlujosPago = new Set(['pago', 'pago_info', 'pago_anticipado_info']);
-
-  // Flujos principales (selección desde el menú). Solo estos reinician un pedido y definen el flowRoot.
-  const mainFlows = new Set(['colchon', 'colchones', 'salas', 'sala', 'comedor', 'comedores', 'almohadas', 'promociones', 'soporte', 'pagos', 'pago']);
-
-  // Si el usuario inicia un flujo principal (1-7 o por texto), consideramos que es un nuevo recorrido.
-  // Reiniciamos control de pedido para que se genere un nuevo order_id al finalizar.
-  if (!subFlujosPago.has(flujo) && mainFlows.has(flujo)) {
-    try {
-      const conv = ensureConv(from);
-      conv.pedidoFinalizado = false;
-      conv.pedidoLogged = false;
-      conv.currentOrderId = null;
-      conv.currentOrderCreatedAt = null;
-      conv.lastFinalMessageAt = null;
-      // Reiniciar buffers del pedido actual (para que "inicio" o un nuevo flujo cree un pedido nuevo)
-      conv.datosClientePedido = '';
-      conv.adjuntosPedido = '';
-      conv.pedidoResumen = '';
-      conv.producto = '';
-      conv.metodoPago = '';
-
-    } catch(e) {}
-  }
-  if (!subFlujosPago.has(flujo) && mainFlows.has(flujo)) {
+  if (!subFlujosPago.has(flujo)) {
     userStates[from].flowRoot = flujo;
   } else if (!userStates[from].flowRoot) {
     // Si por algún motivo entramos a pago sin flowRoot, dejamos algo razonable
@@ -932,36 +781,17 @@ async function sendMessage(to, text, opts = {}) {
       if (lower.includes('gracias por enviar tus datos')) {
         const conv = ensureConv(to);
         conv.pedidoFinalizado = true;
-
-        const now = Date.now();
-
-        // Anti-duplicados: si por cualquier motivo este mensaje se envía 2 veces seguidas,
-        // NO generes un nuevo order_id ni registres 2 filas.
-        if (conv.lastFinalMessageAt && (now - conv.lastFinalMessageAt) < (2 * 60 * 1000)) return;
-        conv.lastFinalMessageAt = now;
-
         // Si ya registramos este pedido, no lo dupliques
         if (conv.pedidoLogged && conv.currentOrderId) return;
 
         // Genera orderId si no existe o si ya expiró (nuevo pedido)
+        const now = Date.now();
         const TTL_MS = 20 * 60 * 1000;
         if (!conv.currentOrderId || !conv.currentOrderCreatedAt || (now - conv.currentOrderCreatedAt) > TTL_MS) {
           conv.currentOrderId = `ORD-${to}-${now}`;
           conv.currentOrderCreatedAt = now;
         }
-
-        // Marcamos como "ya registrado" ANTES del await para evitar duplicados por concurrencia
-        conv.pedidoLogged = true;
-
         await logPedidoFlexible({ waId: to, orderId: conv.currentOrderId });
-
-        // Notificar a vendedores cuando se detecta un pedido finalizado
-        try {
-          await notifyVendedoresNuevoPedido({ waId: to, producto: conv.pedidoResumen || conv.producto || '', pago: conv.metodoPago || '', datosCliente: conv.datosClientePedido || '' });
-        } catch (e) {
-          // no bloquea
-        }
-
         conv.pedidoLogged = true;
       }
     } catch(e) {
@@ -1099,8 +929,29 @@ exports.handleMessage = (req, res) => {
   messageHistory.add(message.id);
   setTimeout(() => messageHistory.delete(message.id), 5 * 60 * 1000);
 
-  // Registramos el mensaje entrante en Google Sheets (no bloquea la respuesta del webhook)
-  logConversacion({ direccion: 'IN', waId: from, messageId: message.id, texto: textoParaLog, extra: '', msgType: msgType, mediaId: (message?.image?.id||message?.video?.id||message?.audio?.id||message?.document?.id||message?.sticker?.id||''), mediaCaption: (message?.image?.caption||message?.video?.caption||message?.document?.caption||'') }).catch(()=>{});
+  // Registramos el mensaje entrante en Google Sheets
+  const __conv = ensureConv(from);
+  const __shouldSyncPedido = !!(__conv && __conv.pedidoFinalizado && __conv.currentOrderId);
+
+  const __logPromise = logConversacion({
+    direccion: 'IN',
+    waId: from,
+    messageId: message.id,
+    texto: textoParaLog,
+    extra: '',
+    msgType: msgType,
+    mediaId: (message?.image?.id||message?.video?.id||message?.audio?.id||message?.document?.id||message?.sticker?.id||''),
+    mediaCaption: (message?.image?.caption||message?.video?.caption||message?.document?.caption||'')
+  });
+
+  __logPromise.catch(()=>{});
+
+  // Si el cliente ya finalizó pedido, cualquier mensaje/adjunto posterior debe actualizar la MISMA fila en "Pedidos"
+  if (__shouldSyncPedido) {
+    __logPromise
+      .then(() => logPedidoFlexible({ waId: from, orderId: __conv.currentOrderId }))
+      .catch(()=>{});
+  }
 
   res.sendStatus(200);
   if (msgType === 'text' && textNormalized) handleTextMessageAsync(from, textNormalized);
@@ -1506,30 +1357,6 @@ async function handleTextMessageAsync(from, text) {
   const state = userStates[from] || null;
   // Aseguramos que el texto recibido sea una cadena y removemos espacios innecesarios.
   const msg = (text || '').trim();
-  const ctl = msg.toLowerCase();
-
-  // "inicio" siempre reinicia el pedido actual: no acumulamos datos de pedidos anteriores.
-  if (['inicio', 'volver'].includes(ctl)) {
-    try {
-      const conv = ensureConv(from);
-      conv.pedidoFinalizado = false;
-      conv.pedidoLogged = false;
-      conv.currentOrderId = null;
-      conv.currentOrderCreatedAt = null;
-      conv.lastFinalMessageAt = null;
-      conv.datosClientePedido = '';
-      conv.adjuntosPedido = '';
-      conv.pedidoResumen = '';
-      conv.producto = '';
-      conv.metodoPago = '';
-    } catch (e) {}
-
-    // Reinicia el estado conversacional
-    try { delete userStates[from]; } catch (e) {}
-    await sendMessage(from, getMenuMessage());
-    return;
-  }
-
   // Si el usuario está intentando "finalizar pedido", registramos un resumen flexible en la pestaña "Pedidos" (si existe)
   try {
     const st = userStates[from] || {};
@@ -1567,19 +1394,7 @@ async function handleTextMessageAsync(from, text) {
     const lower = msg.toLowerCase();
     if (['inicio', 'menú', 'menu', 'volver'].includes(lower)) {
       delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-            conv.datosClientePedido = '';
-            conv.adjuntosPedido = '';
-            conv.pedidoResumen = '';
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+      return sendMessage(from, getMenuMessage());
     }
     // No responder a otros mensajes mientras el asesor gestiona la conversación
     return;
@@ -1591,30 +1406,12 @@ async function handleTextMessageAsync(from, text) {
   // Saludos
   if (['hola', 'buenas', 'buenos días', 'buenos dias', 'buen día', 'buen dia', 'buenas tardes', 'buenas noches', 'saludos', 'qué tal', 'que tal', 'hey', 'hi', 'holi', 'holis'].some(k => text.includes(k))) {
     delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+    return sendMessage(from, getMenuMessage());
   }
 
   if (['inicio', 'menú', 'menu', 'volver'].includes(text)) {
     delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+    return sendMessage(from, getMenuMessage());
   }
 
   if (!state && ['1', 'colchon', 'colchones', 'combo', 'combos', 'cama', 'colchón', 'colchoncito', 
@@ -2066,16 +1863,7 @@ ${detallePrecio}
     // Volver al inicio
     if (['inicio','menú','menu','volver'].includes(text)) {
       delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+      return sendMessage(from, getMenuMessage());
     }
     // Cualquier otro texto no es válido en este punto
       return sendMessage(from, '⚠️ Escribe *1* para continuar con el cabecero, *2* para modificar la base cama, *3* para continuar sin cabecero o *"inicio"* para regresar al menú principal.');
@@ -2185,16 +1973,7 @@ if (state?.flujo === 'cabecero') {
     // Volver al inicio
     if (['inicio', 'menú', 'menu', 'volver'].includes(text)) {
       delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+      return sendMessage(from, getMenuMessage());
     }
     // Cualquier otra entrada es inválida
     // Mensaje de advertencia cuando la entrada no coincide con las opciones permitidas
@@ -2237,16 +2016,7 @@ if (state?.flujo === 'pago_anticipado_info') {
     // Volver al inicio
     if (['inicio','menú','menu','volver'].includes(lower)) {
       delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+      return sendMessage(from, getMenuMessage());
     }
     // Entrada no válida en el menú
     return sendMessage(from, '⚠️ Por favor, escribe *1* para finalizar, *2* para ver otras opciones o *"inicio"* para volver al menú.');
@@ -2256,54 +2026,11 @@ if (state?.flujo === 'pago_anticipado_info') {
     // Permitir regresar al inicio
     if (['inicio','menú','menu','volver'].includes(lower)) {
       delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+      return sendMessage(from, getMenuMessage());
     }
-    // Interpretar cualquier otro texto como datos y comprobante enviados (FINALIZA PEDIDO)
-    // En este punto el cliente ya está enviando sus datos / comprobante.
-    // Regla: el pedido queda finalizado cuando el bot envía el mensaje de confirmación.
-    const conv = ensureConv(from);
-    try { setConvContextFromState(from, userStates[from]); } catch(e) {}
-
-    // Asegura order_id para este pedido
-    if (!conv.currentOrderId) {
-      conv.currentOrderId = `ORD-${from}-${Date.now()}`;
-      conv.currentOrderCreatedAt = Date.now();
-    }
-
-    // Marcar pedido como finalizado
-    conv.pedidoFinalizado = true;
-
-    // Guardar / upsert en Sheets (Pedidos) y notificar a vendedores UNA sola vez
-    try {
-      await logPedidoFlexible({ waId: from, orderId: conv.currentOrderId });
-    } catch(e) {}
-
-    if (!conv.pedidoLogged) {
-      conv.pedidoLogged = true;
-      try {
-        await notifyVendedoresNuevoPedido({
-          waId: from,
-          datosCliente: conv.datosClientePedido || '',
-          producto: conv.pedidoResumen || conv.producto || '',
-          metodoPago: conv.metodoPago || '',
-          adjuntos: conv.adjuntosPedido || conv.adjuntos || ''
-        });
-      } catch(e) {}
-    }
-
-    // Mensaje final (debe activar la regla de "pedido finalizado")
-    await sendMessage(from, '🙏 *Gracias por enviar tus datos.* Un asesor se comunicará contigo para coordinar la entrega de tu pedido.');
-
-    // Pasar a modo manual (asesor toma el caso)
+    // Interpretar cualquier otro texto como datos y comprobante enviados
+    await sendMessage(from, '🙏 *Gracias por elegir Slumber.* Un asesor se comunicará contigo para coordinar la entrega de tu pedido.');
+    // Pasar a modo manual
     userStates[from].flujo = 'manual';
     delete userStates[from].pagoAnticipadoStep;
     return;
@@ -2311,16 +2038,7 @@ if (state?.flujo === 'pago_anticipado_info') {
   // Por defecto, permitir volver al menú
   if (['inicio','menú','menu','volver'].includes(lower)) {
     delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+    return sendMessage(from, getMenuMessage());
   }
   return sendMessage(from, '⚠️ Por favor, responde con una opción válida o *"inicio"* para regresar al menú.');
 }
@@ -2417,16 +2135,7 @@ if (state?.flujo === 'promociones') {
   if (['inicio','menú','menu','volver'].includes(lower)) {
     // Regresar al menú principal
     delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+    return sendMessage(from, getMenuMessage());
   }
   // Si la entrada no coincide con ninguna opción válida
   return sendMessage(from, '⚠️ Por favor, escribe *1* para *finalizar el pedido* o *2* para *ver opciones de pago*. También puedes escribir *modificar* para volver a ver la promo o *inicio* para regresar al menú principal. ver la promoción o *"inicio"* para regresar al menú principal.');
@@ -2445,16 +2154,7 @@ if (state?.flujo === 'soporte') {
   // Permitir al usuario regresar al menú principal en cualquier momento
   if (['inicio', 'menú', 'menu', 'volver'].includes(lower)) {
     delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+    return sendMessage(from, getMenuMessage());
   }
   // Paso A: Si aún no hemos recibido la descripción de la solicitud, interpretamos
   // cualquier texto como tal.  Guardamos la solicitud en el estado y pedimos los datos.
@@ -2642,16 +2342,7 @@ if (state?.flujo === 'soporte') {
       // Volver al inicio
       if (['inicio','menú','menu','volver'].includes(text)) {
         delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+        return sendMessage(from, getMenuMessage());
       }
 
       // Cualquier otro texto aquí no es válido
@@ -2776,16 +2467,7 @@ ${listaMuebles}
       // Volver al inicio
       if (['inicio','menú','menu','volver'].includes(text)) {
         delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+        return sendMessage(from, getMenuMessage());
       }
       // Cualquier otra respuesta no válida
       if (multiple) {
@@ -3071,16 +2753,7 @@ ${listaMuebles}
       // Volver al inicio
       if (['inicio','menú','menu','volver'].includes(text)) {
         delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+        return sendMessage(from, getMenuMessage());
       }
       // Cualquier otro texto no válido
       return sendMessage(from, '⚠️ Escribe *1* para ver opciones de pago, *2* para modificar o *"inicio"* para regresar.');
@@ -3220,9 +2893,6 @@ ${listaMuebles}
           // Construimos texto de total
           const totalTxt = totalConocido ? `$${formatCurrency(total)}` : 'Consultar precio';
           const resumenTexto = resumenLineas.join('\n');
-          // Guardamos resumen en el estado para usarlo en Sheets y notificaciones (evita [object Object])
-          state.resumenTexto = resumenTexto;
-          state.totalTxt = totalTxt;
           const metodoPagoTxt = state.pagoDetalle === 'tarjeta_bold' ? 'Tarjeta (crédito/débito) - Link Bold' : 'Pago contraentrega';
           const mensajeFinal = `
 🛒 *Resumen de tu pedido:*
@@ -3254,15 +2924,6 @@ ${resumenTexto}
         // Permitir regresar al inicio
         if ([ 'inicio', 'menú', 'menu', 'volver' ].includes(text)) {
           delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
           return sendMessage(from, getMenuMessage());
         }
         return sendMessage(from, '⚠️ Escribe *1* para finalizar tu pedido, *2* para ver opciones de pago o *"inicio"* para regresar al menú principal.');
@@ -3388,9 +3049,6 @@ ${resumenTexto}
           }
           const totalTxt = totalConocido ? `$${formatCurrency(total)}` : 'Consultar precio';
           const resumenTexto = resumenLineas.join('\n');
-          // Guardamos resumen en el estado para usarlo en Sheets y notificaciones (evita [object Object])
-          state.resumenTexto = resumenTexto;
-          state.totalTxt = totalTxt;
           const mensajeDatos =
             `\n🛒 *Resumen de tu pedido:*\n\n${resumenTexto}\n\n💵 *Total:* ${totalTxt}\n\n` +
             `📄 *Para continuar con tu financiación ADDI, por favor envíanos:*\n` +
@@ -3416,15 +3074,6 @@ ${resumenTexto}
         }
         if (['inicio','menú','menu','volver'].includes(text)) {
           delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
           return sendMessage(from, getMenuMessage());
         }
         return sendMessage(from, '⚠️ Escribe *1* para finalizar tu pedido, *2* para ver opciones de pago o *"inicio"* para regresar al menú principal.');
@@ -3549,9 +3198,6 @@ ${resumenTexto}
           }
           const totalTxt = totalConocido ? `$${formatCurrency(total)}` : 'Consultar precio';
           const resumenTexto = resumenLineas.join('\n');
-          // Guardamos resumen en el estado para usarlo en Sheets y notificaciones (evita [object Object])
-          state.resumenTexto = resumenTexto;
-          state.totalTxt = totalTxt;
           const mensajeDatos =
             `\n🛒 *Resumen de tu pedido:*\n\n${resumenTexto}\n\n💵 *Total:* ${totalTxt}\n\n` +
             `📄 *Para continuar con tu crédito VANTI, por favor envíanos:*\n` +
@@ -3574,15 +3220,6 @@ ${resumenTexto}
         }
         if (['inicio','menú','menu','volver'].includes(text)) {
           delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
           return sendMessage(from, getMenuMessage());
         }
         return sendMessage(from, '⚠️ Escribe *1* para finalizar tu pedido, *2* para ver opciones de pago o *"inicio"* para regresar al menú principal.');
@@ -3593,15 +3230,6 @@ ${resumenTexto}
         // Si el usuario quiere volver al inicio, borramos el estado y mostramos el menú principal.
         if (['inicio','menú','menu','volver'].includes(text)) {
           delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
           return sendMessage(from, getMenuMessage());
         }
         // Agradecemos los datos y marcamos la conversación para atención manual.  Esto evita
@@ -3616,15 +3244,6 @@ ${resumenTexto}
         // Permitir volver al inicio
         if (['inicio','menú','menu','volver'].includes(text)) {
           delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
           return sendMessage(from, getMenuMessage());
         }
         // Agradecemos los datos y pasamos a modo manual
@@ -3637,15 +3256,6 @@ ${resumenTexto}
       if (state.pagoDetalle === 'vanti' && state.pagoStep === 'datos') {
         if (['inicio','menú','menu','volver'].includes(text)) {
           delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
           return sendMessage(from, getMenuMessage());
         }
         await sendMessage(from, '🙏 Gracias por enviar tus datos. Un asesor se comunicará contigo en breve.');
@@ -3658,15 +3268,6 @@ ${resumenTexto}
       if (state.pagoDetalle === 'tarjeta_bold' && state.pagoStep === 'datos') {
         if (['inicio','menú','menu','volver'].includes(text)) {
           delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
           return sendMessage(from, getMenuMessage());
         }
         await sendMessage(from, '🙏 Gracias por enviar tus datos. Un asesor se comunicará contigo para enviarte el link de pago (Bold) y guiarte en el proceso con tarjeta.');
@@ -3683,16 +3284,7 @@ ${resumenTexto}
       }
       if (['inicio','menú','menu','volver'].includes(text)) {
         delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+        return sendMessage(from, getMenuMessage());
       }
         return sendMessage(from, '⚠️ Escribe *1* para ver opciones de pago o *"inicio"* para regresar al menú principal.');
     }
@@ -3793,16 +3385,7 @@ Un asesor puede colaborarte con la solicitud y despejar tus dudas. Para proceder
       }
       if (['inicio','menú','menu','volver'].includes(text)) {
         delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+        return sendMessage(from, getMenuMessage());
       }
       // Cualquier otra entrada es inválida
       return sendMessage(from, '⚠️ Por favor, responde con *1* para ver opciones de pago o escribe *"inicio"* para regresar al menú principal.');
@@ -3812,16 +3395,7 @@ Un asesor puede colaborarte con la solicitud y despejar tus dudas. Para proceder
       // Permitir volver al inicio
       if (['inicio','menú','menu','volver'].includes(text)) {
         delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+        return sendMessage(from, getMenuMessage());
       }
       // Agradecemos los datos enviados y avisamos que un asesor se pondrá en contacto.
       // Marcamos la conversación como manual para que no se envíen más respuestas automáticas.
@@ -3902,16 +3476,7 @@ Un asesor puede colaborarte con la solicitud y despejar tus dudas. Para proceder
 // Permitir volver al menú principal
       if (['inicio','menú','menu','volver'].includes(text)) {
         delete userStates[from];
-          // Reinicia control de pedido para que el siguiente recorrido genere un nuevo order_id
-          try {
-            const conv = ensureConv(from);
-            conv.pedidoFinalizado = false;
-            conv.pedidoLogged = false;
-            conv.currentOrderId = null;
-            conv.currentOrderCreatedAt = null;
-            conv.lastFinalMessageAt = null;
-          } catch(e) {}
-          return sendMessage(from, getMenuMessage());
+        return sendMessage(from, getMenuMessage());
       }
       // Otra entrada no válida
       return sendMessage(from, '⚠️ Por favor, elige *1*, *2*, *3*, *4* o *5*, o escribe *"inicio"* para regresar al menú principal.');
