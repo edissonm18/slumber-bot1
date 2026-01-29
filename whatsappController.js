@@ -158,11 +158,28 @@ function buildProductoResumenFromState(state) {
 
   // Colchones: tipo + medida + dureza + precio (si existe)
   if (flowRoot.includes('colch')) {
-    const tipo = state.tipo ? `Colchón ${state.tipo}` : 'Colchón';
-    const medida = state.medida ? `Medida: ${state.medida}` : '';
+    // Si ya tenemos un resumen armado (igual al enviado al cliente), úsalo para notificaciones y Sheets.
+    if (state.resumenTexto) {
+      const totalLine = state.totalTxt ? `💵 Total: ${state.totalTxt}` : '';
+      return ['🛒 Resumen de tu pedido:', state.resumenTexto, totalLine].filter(Boolean).join('\n');
+    }
+
+    const tipo = state.tipo ? `📦 Colchón: ${state.tipo}` : '📦 Colchón';
+    const medida = state.medida ? `${state.medida}` : '';
     const firmeza = state.dureza ? `Firmeza: ${state.dureza}` : '';
-    // Precio: si existe en state.precioFinal (no siempre) o lo calculamos luego al final
-    return [tipo, medida, firmeza].filter(Boolean).join(' | ');
+
+    // Si hay base cama / cabecero seleccionados en el estado, intentamos incluirlos también.
+    const base = state.basecamaTipo ? `🛏️ Base cama: ${state.basecamaTipo}` : '';
+    const cab = state.cabeceroTipo ? `🛋️ Cabecero: ${state.cabeceroTipo}` : '';
+
+    const lineas = [
+      `${tipo}${medida ? ` ${medida}` : ''}${firmeza ? ` — ${firmeza}` : ''}`,
+      base,
+      cab
+    ].filter(Boolean);
+
+    return lineas.join(' | ');
+
   }
 
   // Basecama
@@ -633,6 +650,11 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
 
     const prod = buildProductoResumenFromState(state);
     if (prod) conv.producto = prod;
+    // Si es un bloque de resumen, lo guardamos también como pedidoResumen (para notificación y pestaña Pedidos)
+    if (prod && (prod.includes('🛒 Resumen de tu pedido') || prod.includes('Resumen de tu pedido'))) {
+      conv.pedidoResumen = prod;
+    }
+
 
     const ui = inferUltimaInteraccion(state);
     if (ui) conv.ultimaInteraccion = ui;
@@ -652,7 +674,7 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     waId,
     flujoPrincipal: conv.flujoPrincipal || '',
     metodoPago: conv.metodoPago || '',
-    producto: conv.producto || '',
+    producto: conv.pedidoResumen || conv.producto || '',
     ultimaInteraccion: conv.ultimaInteraccion || '',
     log: conv.log || '',
     datosCliente: conv.datosClientePedido || conv.datosCliente || '',
@@ -809,9 +831,12 @@ function iniciarFlujo(from, flujo) {
   // Cuando entramos a subflujos de pago, NO queremos perder el flujo raíz.
   const subFlujosPago = new Set(['pago', 'pago_info', 'pago_anticipado_info']);
 
+  // Flujos principales (selección desde el menú). Solo estos reinician un pedido y definen el flowRoot.
+  const mainFlows = new Set(['colchon', 'colchones', 'salas', 'sala', 'comedor', 'comedores', 'almohadas', 'promociones', 'soporte', 'pagos', 'pago']);
+
   // Si el usuario inicia un flujo principal (1-7 o por texto), consideramos que es un nuevo recorrido.
   // Reiniciamos control de pedido para que se genere un nuevo order_id al finalizar.
-  if (!subFlujosPago.has(flujo)) {
+  if (!subFlujosPago.has(flujo) && mainFlows.has(flujo)) {
     try {
       const conv = ensureConv(from);
       conv.pedidoFinalizado = false;
@@ -819,9 +844,16 @@ function iniciarFlujo(from, flujo) {
       conv.currentOrderId = null;
       conv.currentOrderCreatedAt = null;
       conv.lastFinalMessageAt = null;
+      // Reiniciar buffers del pedido actual (para que "inicio" o un nuevo flujo cree un pedido nuevo)
+      conv.datosClientePedido = '';
+      conv.adjuntosPedido = '';
+      conv.pedidoResumen = '';
+      conv.producto = '';
+      conv.metodoPago = '';
+
     } catch(e) {}
   }
-  if (!subFlujosPago.has(flujo)) {
+  if (!subFlujosPago.has(flujo) && mainFlows.has(flujo)) {
     userStates[from].flowRoot = flujo;
   } else if (!userStates[from].flowRoot) {
     // Si por algún motivo entramos a pago sin flowRoot, dejamos algo razonable
@@ -1474,6 +1506,30 @@ async function handleTextMessageAsync(from, text) {
   const state = userStates[from] || null;
   // Aseguramos que el texto recibido sea una cadena y removemos espacios innecesarios.
   const msg = (text || '').trim();
+  const ctl = msg.toLowerCase();
+
+  // "inicio" siempre reinicia el pedido actual: no acumulamos datos de pedidos anteriores.
+  if (['inicio', 'volver'].includes(ctl)) {
+    try {
+      const conv = ensureConv(from);
+      conv.pedidoFinalizado = false;
+      conv.pedidoLogged = false;
+      conv.currentOrderId = null;
+      conv.currentOrderCreatedAt = null;
+      conv.lastFinalMessageAt = null;
+      conv.datosClientePedido = '';
+      conv.adjuntosPedido = '';
+      conv.pedidoResumen = '';
+      conv.producto = '';
+      conv.metodoPago = '';
+    } catch (e) {}
+
+    // Reinicia el estado conversacional
+    try { delete userStates[from]; } catch (e) {}
+    await sendMessage(from, getMenuMessage());
+    return;
+  }
+
   // Si el usuario está intentando "finalizar pedido", registramos un resumen flexible en la pestaña "Pedidos" (si existe)
   try {
     const st = userStates[from] || {};
@@ -2236,8 +2292,8 @@ if (state?.flujo === 'pago_anticipado_info') {
       try {
         await notifyVendedoresNuevoPedido({
           waId: from,
-          datosCliente: conv.datosCliente || '',
-          producto: conv.producto || '',
+          datosCliente: conv.datosClientePedido || '',
+          producto: conv.pedidoResumen || conv.producto || '',
           metodoPago: conv.metodoPago || '',
           adjuntos: conv.adjuntosPedido || conv.adjuntos || ''
         });
