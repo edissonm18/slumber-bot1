@@ -54,6 +54,8 @@ function ensureConv(waId) {
       log: '',
       adjuntos: '',
       datosCliente: '',
+      datosClientePedido: '',
+      adjuntosPedido: '',
       flujoPrincipal: '',
       metodoPago: '',
       producto: '',
@@ -590,6 +592,14 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     conv.datosCliente = appendWithSep(conv.datosCliente, cleanText, ';');
   }
 
+  // Acumula datos SOLO del pedido actual (se reinicia con "inicio")
+  if (direccion === 'IN' && cleanText) {
+    const ctl = cleanText.toLowerCase();
+    if (!['inicio','menu','menú','volver'].includes(ctl)) {
+      conv.datosClientePedido = appendWithSep(conv.datosClientePedido, cleanText, ';');
+    }
+  }
+
   // Si hay state, actualiza contexto de negocio
   if (state) {
     const fp = mapFlujoPrincipal(state.flowRoot, state.flujo);
@@ -610,6 +620,7 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     const downloadUrl = await getMediaDownloadUrl(mediaId);
     const storeUrl = downloadUrl || `https://graph.facebook.com/v19.0/${mediaId}`;
     conv.adjuntos = appendWithSep(conv.adjuntos, storeUrl, ';');
+    conv.adjuntosPedido = appendWithSep(conv.adjuntosPedido, storeUrl, ';');
   }
 
   const data = {
@@ -621,8 +632,8 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     producto: conv.producto || '',
     ultimaInteraccion: conv.ultimaInteraccion || '',
     log: conv.log || '',
-    datosCliente: conv.datosCliente || '',
-    adjuntos: conv.adjuntos || '',
+    datosCliente: conv.datosClientePedido || conv.datosCliente || '',
+    adjuntos: conv.adjuntosPedido || conv.adjuntos || '',
     // compatibilidad
     fechaISO: stampISO,
     messageId: messageId || '',
@@ -743,7 +754,7 @@ async function logPedidoFlexible(pedidoData) {
     orderId,
     fechaHora: stamp,
     numeroWhatsapp: waId,
-    datosCliente: conv.datosCliente || '',
+    datosCliente: conv.datosClientePedido || '',
     producto: productoSafe,
     metodoPago: metodoPagoSafe,
     adjuntos: conv.adjuntos || ''
@@ -1485,6 +1496,8 @@ async function handleTextMessageAsync(from, text) {
             conv.currentOrderId = null;
             conv.currentOrderCreatedAt = null;
             conv.lastFinalMessageAt = null;
+            conv.datosClientePedido = '';
+            conv.adjuntosPedido = '';
           } catch(e) {}
           return sendMessage(from, getMenuMessage());
     }
