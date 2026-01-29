@@ -157,13 +157,11 @@ function buildProductoResumenFromState(state) {
 
   // Salas / muebles
   if (flowRoot.includes('sala') || flowRoot.includes('mueble')) {
-    // Si ya tenemos un resumen armado (por ejemplo: Sala Oslo + Total), úsalo.
+    // Si ya tenemos un resumen armado (por ejemplo: "* Sala: Sala Oslo — $2.490.000"), úsalo.
     if (state.resumenTexto) {
       const totalTxt = state.totalTxt ? `💵 Total: ${state.totalTxt}` : '';
       return ['🛒 Resumen de tu pedido:', state.resumenTexto, totalTxt].filter(Boolean).join('\n');
     }
-
-    const t = state.muebleTipo ? `Sala/Mueble: ${state.muebleTipo}` : 'Sala/Mueble';
 
     // state.muebleProducto a veces es un objeto (ej: {nombre, precio}); lo convertimos a texto legible
     let prodName = '';
@@ -180,14 +178,27 @@ function buildProductoResumenFromState(state) {
     const prodLine = prodName ? `🛋️ Sala: ${prodName}${prodPrice ? ` — ${prodPrice}` : ''}` : '';
     const totalLine = state.totalTxt ? `💵 Total: ${state.totalTxt}` : '';
 
-    return [t, prodLine, totalLine].filter(Boolean).join(' | ');
+    // Formato como el mensaje al cliente (líneas), SIN "Sala/Mueble: ..."
+    return ['🛒 Resumen de tu pedido:', prodLine, totalLine].filter(Boolean).join('\n');
   }
 
   // Comedores
   if (flowRoot.includes('comedor')) {
-    const t = state.comedorTipo ? `Comedor: ${state.comedorTipo}` : 'Comedor';
-    const prod = state.comedorProducto ? `Producto: ${state.comedorProducto}` : '';
-    return [t, prod].filter(Boolean).join(' | ');
+    // state.comedorProducto puede ser objeto: {nombre, precio}
+    let nombre = '';
+    let precioTxt = '';
+    const cp = state.comedorProducto;
+    if (cp && typeof cp === 'object') {
+      nombre = (cp.nombre || cp.name || cp.titulo || '').toString().trim();
+      const p = cp.precio ?? cp.price;
+      if (typeof p === 'number' && p > 0) precioTxt = `$${formatCurrency(p)}`;
+    } else if (cp) {
+      nombre = cp.toString().trim();
+    }
+
+    const linea = nombre ? `🍽️ Comedor: ${nombre}${precioTxt ? ` — ${precioTxt}` : ''}` : '🍽️ Comedor';
+    const totalLine = state.totalTxt ? `💵 Total: ${state.totalTxt}` : (precioTxt ? `💵 Total: ${precioTxt}` : '');
+    return ['🛒 Resumen de tu pedido:', linea, totalLine].filter(Boolean).join('\n');
   }
 
   // Almohadas / protectores
@@ -489,6 +500,15 @@ async function logEventoFlexible(eventData) {
     data.fechaISO, data.waId, data.evento, data.flujo, data.step, data.texto, data.extra
   ];
   if (row) await appendRowToSheet(sheetName, row);
+
+  // Si el pedido ya fue finalizado, cualquier texto/adjunto adicional debe quedar asociado al MISMO pedido (mismo order_id).
+  // Hacemos UPSERT en PEDIDOS para mantener "datos del cliente" y "adjuntos" actualizados.
+  try {
+    const conv2 = ensureConv(waId);
+    if (conv2.pedidoFinalizado && conv2.currentOrderId) {
+      await logPedidoFlexible({ waId, orderId: conv2.currentOrderId });
+    }
+  } catch(e) {}
 }
 // ================== FIN SHEETS: UPSERT ==================
 
@@ -711,8 +731,9 @@ async function logPedidoFlexible(pedidoData) {
   const producto = (pedidoData.producto || conv.producto || '').toString().trim();
   const metodoPago = (pedidoData.metodoPago || conv.metodoPago || '').toString().trim();
 
-  // Solo guardamos pedido si ya hay producto + método de pago
-  if (!producto || !metodoPago) return;
+  // Guardamos pedido aunque falte producto/pago; se podrá completar con el historial del flujo.
+  const productoSafe = producto || 'N/D';
+  const metodoPagoSafe = metodoPago || 'N/D';
 
   const orderId = pedidoData.orderId || conv.currentOrderId || `ORD-${waId}-${Date.now()}`;
   conv.currentOrderId = orderId;
@@ -723,8 +744,8 @@ async function logPedidoFlexible(pedidoData) {
     fechaHora: stamp,
     numeroWhatsapp: waId,
     datosCliente: conv.datosCliente || '',
-    producto,
-    metodoPago,
+    producto: productoSafe,
+    metodoPago: metodoPagoSafe,
     adjuntos: conv.adjuntos || ''
   };
 
@@ -2153,9 +2174,43 @@ if (state?.flujo === 'pago_anticipado_info') {
           } catch(e) {}
           return sendMessage(from, getMenuMessage());
     }
-    // Interpretar cualquier otro texto como datos y comprobante enviados
-    await sendMessage(from, '🙏 *Gracias por elegir Slumber.* Un asesor se comunicará contigo para coordinar la entrega de tu pedido.');
-    // Pasar a modo manual
+    // Interpretar cualquier otro texto como datos y comprobante enviados (FINALIZA PEDIDO)
+    // En este punto el cliente ya está enviando sus datos / comprobante.
+    // Regla: el pedido queda finalizado cuando el bot envía el mensaje de confirmación.
+    const conv = ensureConv(from);
+    try { setConvContextFromState(from, userStates[from]); } catch(e) {}
+
+    // Asegura order_id para este pedido
+    if (!conv.currentOrderId) {
+      conv.currentOrderId = `ORD-${from}-${Date.now()}`;
+      conv.currentOrderCreatedAt = Date.now();
+    }
+
+    // Marcar pedido como finalizado
+    conv.pedidoFinalizado = true;
+
+    // Guardar / upsert en Sheets (Pedidos) y notificar a vendedores UNA sola vez
+    try {
+      await logPedidoFlexible({ waId: from, orderId: conv.currentOrderId });
+    } catch(e) {}
+
+    if (!conv.pedidoLogged) {
+      conv.pedidoLogged = true;
+      try {
+        await notifyVendedoresNuevoPedido({
+          waId: from,
+          datosCliente: conv.datosCliente || '',
+          producto: conv.producto || '',
+          metodoPago: conv.metodoPago || '',
+          adjuntos: conv.adjuntos || ''
+        });
+      } catch(e) {}
+    }
+
+    // Mensaje final (debe activar la regla de "pedido finalizado")
+    await sendMessage(from, '🙏 *Gracias por enviar tus datos.* Un asesor se comunicará contigo para coordinar la entrega de tu pedido.');
+
+    // Pasar a modo manual (asesor toma el caso)
     userStates[from].flujo = 'manual';
     delete userStates[from].pagoAnticipadoStep;
     return;
