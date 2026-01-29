@@ -360,7 +360,7 @@ function buildRowFromHeaders(headers, data) {
     else if (h === 'producto') row[i] = data.producto || '';
     else if (h === 'medida') row[i] = data.medida || '';
     else if (h === 'precio') row[i] = data.precio || '';
-    else if (h === 'pago' || h === 'metodo de pago' || h === 'método de pago') row[i] = data.pago || '';
+    else if (h === 'pago' || h === 'metodo de pago' || h === 'método de pago') row[i] = data.pago || data.metodoPago || data.medioPago || '';
     else if (h === 'estado') row[i] = data.estado || '';
     else if (h === 'nombre') row[i] = data.nombre || '';
     else if (h === 'telefono' || h === 'teléfono') row[i] = data.telefono || data.waId || '';
@@ -780,6 +780,8 @@ async function logPedidoFlexible(pedidoData) {
     datosCliente: conv.datosClientePedido || '',
     producto: productoSafe,
     metodoPago: metodoPagoSafe,
+    pago: metodoPagoSafe,
+    medioPago: metodoPagoSafe,
     adjuntos: conv.adjuntosPedido || conv.adjuntos || ''
   };
 
