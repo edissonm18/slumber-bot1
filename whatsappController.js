@@ -650,6 +650,7 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     fechaHora: stamp,
     numeroWhatsapp: waId,
     waId,
+    orderId: conv.currentOrderId || '',
     flujoPrincipal: conv.flujoPrincipal || '',
     metodoPago: conv.metodoPago || '',
     producto: conv.producto || '',
@@ -984,51 +985,10 @@ async function sendMessage(to, text, opts = {}) {
     if (!opts.skipLog) {
       logConversacion({ direccion: 'OUT', waId: to, messageId: outId, texto: text, extra: '' }).catch(()=>{});
     }
-  
 
-    // Si el bot acaba de confirmar recepción de datos (mensaje final), marcamos pedido finalizado
-    // y registramos/actualizamos el pedido (historial) con order_id.
-    try {
-      const lower = (text || '').toString().toLowerCase();
-      if (lower.includes('gracias por enviar tus datos')) {
-        const conv = ensureConv(to);
-        conv.pedidoFinalizado = true;
-
-        const now = Date.now();
-
-        // Anti-duplicados: si por cualquier motivo este mensaje se envía 2 veces seguidas,
-        // NO generes un nuevo order_id ni registres 2 filas.
-        if (conv.lastFinalMessageAt && (now - conv.lastFinalMessageAt) < (2 * 60 * 1000)) return;
-        conv.lastFinalMessageAt = now;
-
-        // Si ya registramos este pedido, no lo dupliques
-        if (conv.pedidoLogged && conv.currentOrderId) return;
-
-        // Genera orderId si no existe o si ya expiró (nuevo pedido)
-        const TTL_MS = 20 * 60 * 1000;
-        if (!conv.currentOrderId || !conv.currentOrderCreatedAt || (now - conv.currentOrderCreatedAt) > TTL_MS) {
-          conv.currentOrderId = `ORD-${to}-${now}`;
-          conv.currentOrderCreatedAt = now;
-        }
-
-        // Marcamos como "ya registrado" ANTES del await para evitar duplicados por concurrencia
-        conv.pedidoLogged = true;
-
-        await logPedidoFlexible({ waId: to, orderId: conv.currentOrderId });
-
-        // Notificar a vendedores cuando se detecta un pedido finalizado
-        try {
-          await notifyVendedoresNuevoPedido({ waId: to, producto: conv.pedidoResumen || conv.producto || '', pago: conv.metodoPago || '', datosCliente: conv.datosClientePedido || '' });
-        } catch (e) {
-          // no bloquea
-        }
-
-        conv.pedidoLogged = true;
-      }
-    } catch(e) {
-      // no bloquea
-    }
-} catch (error) {
+    // (Ajuste 2026-01-29) El cierre del pedido y el registro en Sheets se gestionan
+    // únicamente desde finalizarPedidoYNotificar(...), para evitar duplicados.
+  } catch (error) {
     console.error('❌ Error al enviar mensaje:', error.response?.data || error.message);
   }
 }
