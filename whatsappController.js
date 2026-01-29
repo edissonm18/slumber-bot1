@@ -640,26 +640,59 @@ async function notifyVendedoresNuevoPedido(pedido) {
   if (!nums.length) return;
 
   const prefix = (process.env.SELLER_NOTIFY_PREFIX || '').trim();
-  const msgLines = [
+
+  const wa = pedido.waId || 'N/D';
+
+  // Datos del cliente (todo lo que escribió, de inicio a fin)
+  const datosRaw = (pedido.datosCliente || '').toString().trim();
+  const datosFmt = datosRaw
+    ? datosRaw.split(';').map(s => s.trim()).filter(Boolean).map(s => `• ${s}`).join('\n')
+    : 'N/D';
+
+  // Producto: si ya viene como "Resumen de tu pedido", lo enviamos como bloque tal cual.
+  const prodRaw = (pedido.producto || '').toString().trim();
+  const prodBlock = prodRaw
+    ? (prodRaw.includes('Resumen de tu pedido') || prodRaw.includes('🛒') ? prodRaw : `Producto: ${prodRaw}`)
+    : 'N/D';
+
+  const pago = (pedido.pago || pedido.metodoPago || '').toString().trim();
+
+  const headerLines = [
     prefix ? prefix : '🆕 *Nuevo pedido finalizado*',
     '',
-    `📞 *Cliente:* ${pedido.nombre || 'N/D'}`,
-    `📲 *WhatsApp:* ${pedido.waId || 'N/D'}`,
-    pedido.producto ? (pedido.producto.toString().includes('🛒 Resumen') ? `🛒 *Pedido:*
-${pedido.producto}` : `🛒 *Producto:* ${pedido.producto}`) : '',
-    pedido.medida ? `📏 *Medida:* ${pedido.medida}` : '',
-    (pedido.precio && pedido.precio !== '0') ? `💰 *Precio:* ${pedido.precio}` : '',
-    pedido.pago ? `💳 *Pago:* ${pedido.pago}` : '',
+    `📲 *WhatsApp cliente:* ${wa}`,
+    pago ? `💳 *Pago:* ${pago}` : '',
+    '',
+    `🛒 *Pedido:*
+${prodBlock}`,
     '',
     '✅ Responde rápido para que el cliente no se enfríe.'
   ].filter(Boolean);
 
-  const text = msgLines.join("\n");
+  const headerText = headerLines.join('\n');
+
+  // Mensaje 2: datos completos del cliente (puede ser largo)
+  const datosLines = [
+    '🧾 *Datos del cliente (texto completo):*',
+    datosFmt
+  ];
+  const datosText = datosLines.join('\n');
+
   for (const n of nums) {
     // Enviamos sin log para no crear filas de "conversación" para vendedores
-    await sendMessage(n, text, { skipLog: true });
+    await sendMessage(n, headerText, { skipLog: true });
+
+    // WhatsApp tiene límites de tamaño; si es muy largo, lo partimos en 2.
+    const MAX_LEN = 3500;
+    if (datosText.length <= MAX_LEN) {
+      await sendMessage(n, datosText, { skipLog: true });
+    } else {
+      await sendMessage(n, datosText.slice(0, MAX_LEN), { skipLog: true });
+      await sendMessage(n, '🧾 (continuación)\n' + datosText.slice(MAX_LEN), { skipLog: true });
+    }
   }
 }
+
 
 // Si en algún momento quieres registrar un pedido, esta función intenta adaptarse a los encabezados de la pestaña "Pedidos".
 
@@ -834,15 +867,10 @@ async function sendMessage(to, text, opts = {}) {
         conv.pedidoLogged = true;
 
         await logPedidoFlexible({ waId: to, orderId: conv.currentOrderId });
-await logPedidoFlexible({ waId: to, orderId: conv.currentOrderId });
 
         // Notificar a vendedores cuando se detecta un pedido finalizado
         try {
-          await notifyVendedoresNuevoPedido({
-            waId: to,
-            producto: conv.producto || '',
-            pago: conv.metodoPago || ''
-          });
+          await notifyVendedoresNuevoPedido({ waId: to, producto: conv.producto || '', pago: conv.metodoPago || '', datosCliente: conv.datosCliente || '' });
         } catch (e) {
           // no bloquea
         }
