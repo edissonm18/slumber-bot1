@@ -73,6 +73,28 @@ function appendWithSep(current, piece, sep = ';') {
   return `${current}${sep}${p}`;
 }
 
+
+function extractResumenPedidoFromText(fullText) {
+  if (!fullText) return '';
+  const text = fullText.toString();
+  const idx = text.indexOf('🛒 Resumen de tu pedido');
+  if (idx < 0) return '';
+  // Tomamos desde el marcador hasta antes de la sección de "Para finalizar" u otras secciones.
+  let chunk = text.slice(idx);
+
+  const cutMarkers = ['📝 Para finalizar', '✳', '🙏 Gracias', '↩ Escribe', '🧾', '✅'];
+  let cutPos = -1;
+  for (const m of cutMarkers) {
+    const p = chunk.indexOf(m);
+    if (p > 0) cutPos = (cutPos === -1) ? p : Math.min(cutPos, p);
+  }
+  if (cutPos > 0) chunk = chunk.slice(0, cutPos);
+
+  // Limpieza básica
+  chunk = chunk.replace(/\n{3,}/g, '\n\n').trim();
+  return chunk;
+}
+
 function mapFlujoPrincipal(flowRoot, flujoActual) {
   const key = (flowRoot || flujoActual || '').toString().toLowerCase().trim();
   switch (key) {
@@ -583,7 +605,8 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const stampISO = nowISO();
   const stamp = nowBogota();
 const who = direccion === 'IN' ? 'IN' : 'OUT';
-  const cleanText = (texto || '').toString().replace(/\s+/g,' ').trim();
+  const rawText = (texto || '').toString();
+  const cleanText = rawText.replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
   conv.log = appendWithSep(conv.log, line, ';');
 
@@ -739,7 +762,7 @@ async function logPedidoFlexible(pedidoData) {
   const waId = pedidoData.waId || '';
   const conv = ensureConv(waId);
 
-  const producto = (pedidoData.producto || conv.producto || '').toString().trim();
+  const producto = (pedidoData.producto || conv.pedidoResumen || conv.producto || '').toString().trim();
   const metodoPago = (pedidoData.metodoPago || conv.metodoPago || '').toString().trim();
 
   // Guardamos pedido aunque falte producto/pago; se podrá completar con el historial del flujo.
@@ -757,7 +780,7 @@ async function logPedidoFlexible(pedidoData) {
     datosCliente: conv.datosClientePedido || '',
     producto: productoSafe,
     metodoPago: metodoPagoSafe,
-    adjuntos: conv.adjuntos || ''
+    adjuntos: conv.adjuntosPedido || conv.adjuntos || ''
   };
 
   const row = buildRowFromHeaders(headers, data);
@@ -902,7 +925,7 @@ async function sendMessage(to, text, opts = {}) {
 
         // Notificar a vendedores cuando se detecta un pedido finalizado
         try {
-          await notifyVendedoresNuevoPedido({ waId: to, producto: conv.producto || '', pago: conv.metodoPago || '', datosCliente: conv.datosCliente || '' });
+          await notifyVendedoresNuevoPedido({ waId: to, producto: conv.pedidoResumen || conv.producto || '', pago: conv.metodoPago || '', datosCliente: conv.datosClientePedido || '' });
         } catch (e) {
           // no bloquea
         }
@@ -1498,6 +1521,7 @@ async function handleTextMessageAsync(from, text) {
             conv.lastFinalMessageAt = null;
             conv.datosClientePedido = '';
             conv.adjuntosPedido = '';
+            conv.pedidoResumen = '';
           } catch(e) {}
           return sendMessage(from, getMenuMessage());
     }
@@ -2215,7 +2239,7 @@ if (state?.flujo === 'pago_anticipado_info') {
           datosCliente: conv.datosCliente || '',
           producto: conv.producto || '',
           metodoPago: conv.metodoPago || '',
-          adjuntos: conv.adjuntos || ''
+          adjuntos: conv.adjuntosPedido || conv.adjuntos || ''
         });
       } catch(e) {}
     }
