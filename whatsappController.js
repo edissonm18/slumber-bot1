@@ -775,12 +775,14 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   const row = headers ? buildRowFromHeaders(headers, data) : null;
   if (!row) return;
 
+  // Guardamos UNA fila por pedido (order_id) en "Conversaciones" para que queden todos los pedidos del mismo WhatsApp
+  // (igual que en la pestaña "Pedidos"). No se sobreescribe todo en una sola fila por número.
   await upsertRowToSheet(
     sheetName,
     headers,
     row,
-    waId,
-    ['waid','wa_id','wa id','wald','numero de whatsapp','número de whatsapp','telefono','teléfono']
+    (conv.currentOrderId || ''),
+    ['order_id','orderid','order id','pedido_id','pedido id']
   );
 
   // Si el pedido ya fue finalizado, cualquier mensaje/adjunto adicional debe actualizar el pedido activo
