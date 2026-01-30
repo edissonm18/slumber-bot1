@@ -69,12 +69,15 @@ function ensureConv(waId) {
 // ================== RESET DE PEDIDO (cuando el cliente escribe "inicio") ==================
 // Reinicia solo lo relacionado al pedido actual: datosClientePedido, adjuntosPedido, order_id, flags.
 // Esto permite que un pedido nuevo NO herede datos del pedido anterior.
-function resetPedido(conv) {
+function resetPedido(conv, waId) {
   if (!conv) return;
   conv.pedidoFinalizado = false;
   conv.pedidoLogged = false;
-  conv.currentOrderId = null;
-  conv.currentOrderCreatedAt = null;
+
+  // Nuevo pedido / nueva sesión
+  const newId = `ORD-${waId}-${Date.now()}`;
+  conv.currentOrderId = newId;
+  conv.currentOrderCreatedAt = Date.now();
   conv.lastFinalMessageAt = null;
 
   // Campos por-pedido (no deben acumularse entre pedidos)
@@ -464,7 +467,7 @@ function normalizeHeader(h) {
   return (h || '').toString().toLowerCase().trim();
 }
 
-async function findRowNumberByKey(sheetName, headers, keyValue, keyHeaderCandidates = ['waid','wa_id','wa id','telefono','teléfono']) {
+async function findRowNumberByKey(sheetName, headers, keyValue, keyHeaderCandidates = ['order_id','orderid','order id','pedido_id','pedido id']) {
   const sheets = getSheetsClient();
   const spreadsheetId = process.env.SHEET_ID;
   if (!sheets || !spreadsheetId) return null;
@@ -551,9 +554,9 @@ async function logEventoFlexible(eventData) {
   // Si el pedido ya fue finalizado, cualquier texto/adjunto adicional debe quedar asociado al MISMO pedido (mismo order_id).
   // Hacemos UPSERT en PEDIDOS para mantener "datos del cliente" y "adjuntos" actualizados.
   try {
-    const conv2 = ensureConv(waId);
+    const conv2 = ensureConv(eventData.waId || '');
     if (conv2.pedidoFinalizado && conv2.currentOrderId) {
-      await logPedidoFlexible({ waId, orderId: conv2.currentOrderId });
+      await logPedidoFlexible({ waId: (eventData.waId || ''), orderId: conv2.currentOrderId });
     }
   } catch(e) {}
 }
@@ -682,6 +685,13 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const sheetName = 'Conversaciones';
   const headers = await getSheetHeaders(sheetName);
   const conv = ensureConv(waId);
+
+  // Asegura que exista un order_id para esta sesión (para que Conversaciones sea 1 fila por pedido)
+  if (!conv.currentOrderId) {
+    conv.currentOrderId = `ORD-${waId}-${Date.now()}`;
+    conv.currentOrderCreatedAt = Date.now();
+  }
+
   const state = userStates[waId] || null;
 
   const stampISO = nowISO();
@@ -695,26 +705,14 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   if (direccion === 'IN') {
     const ctl2 = cleanText.toLowerCase();
     if (['inicio','menu','menú','volver'].includes(ctl2)) {
-      resetPedido(conv);
-    }
-  }
-
-  // Si aún no existe order_id para este recorrido y el mensaje NO es control, creamos uno tentativo
-  // (se mantiene hasta finalizar y se usa también en "Pedidos")
-  if (direccion === 'IN') {
-    const ctl3 = cleanText.toLowerCase();
-    if (!['inicio','menu','menú','volver'].includes(ctl3)) {
-      if (!conv.currentOrderId) {
-        conv.currentOrderId = `ORD-${waId}-${Date.now()}`;
-        conv.currentOrderCreatedAt = Date.now();
-      }
+      resetPedido(conv, waId);
     }
   }
 
   conv.log = appendWithSep(conv.log, line, ';');
 
   // Mezcla con lo existente en Sheets para no perder historial si el servidor reinicia
-  await mergeExistingConversacionRow({ sheetName, headers, keyValue: waId, newLine: line, conv }).catch(()=>{});
+  await mergeExistingConversacionRow({ sheetName, headers, keyValue: (conv.currentOrderId || ''), newLine: line, conv }).catch(()=>{});
 
 
   // Todo texto del cliente (IN) se acumula siempre
@@ -873,6 +871,13 @@ async function logPedidoFlexible(pedidoData) {
   const waId = pedidoData.waId || '';
   const conv = ensureConv(waId);
 
+  // Asegura que exista un order_id para esta sesión (para que Conversaciones sea 1 fila por pedido)
+  if (!conv.currentOrderId) {
+    conv.currentOrderId = `ORD-${waId}-${Date.now()}`;
+    conv.currentOrderCreatedAt = Date.now();
+  }
+
+
   const producto = (pedidoData.producto || conv.pedidoResumen || conv.producto || '').toString().trim();
   const metodoPago = (pedidoData.metodoPago || conv.metodoPago || '').toString().trim();
 
@@ -1018,7 +1023,7 @@ function iniciarFlujo(from, flujo) {
 if (!subFlujosPago.has(flujo)) {
   try {
     const conv = ensureConv(from);
-    resetPedido(conv);
+    resetPedido(conv, waId);
   } catch(e) {}
 }
 if (!subFlujosPago.has(flujo)) {
