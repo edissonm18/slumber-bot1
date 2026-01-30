@@ -65,6 +65,29 @@ function ensureConv(waId) {
   return conversationCache[waId];
 }
 
+
+// ================== RESET DE PEDIDO (cuando el cliente escribe "inicio") ==================
+// Reinicia solo lo relacionado al pedido actual: datosClientePedido, adjuntosPedido, order_id, flags.
+// Esto permite que un pedido nuevo NO herede datos del pedido anterior.
+function resetPedido(conv) {
+  if (!conv) return;
+  conv.pedidoFinalizado = false;
+  conv.pedidoLogged = false;
+  conv.currentOrderId = null;
+  conv.currentOrderCreatedAt = null;
+  conv.lastFinalMessageAt = null;
+
+  // Campos por-pedido (no deben acumularse entre pedidos)
+  conv.datosClientePedido = '';
+  conv.adjuntosPedido = '';
+  conv.pedidoResumen = '';
+  conv.producto = '';
+  conv.metodoPago = '';
+  conv.flujoPrincipal = '';
+  conv.ultimaInteraccion = '';
+}
+
+
 function appendWithSep(current, piece, sep = ';') {
   const p = (piece || '').toString().trim();
   if (!p) return current || '';
@@ -672,6 +695,27 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   const rawText = (texto || '').toString();
   const cleanText = rawText.replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
+
+  // Si el cliente escribe "inicio" (o similares), reiniciamos el pedido actual para que NO herede datos anteriores
+  if (direccion === 'IN') {
+    const ctl2 = cleanText.toLowerCase();
+    if (['inicio','menu','menú','volver'].includes(ctl2)) {
+      resetPedido(conv);
+    }
+  }
+
+  // Si aún no existe order_id para este recorrido y el mensaje NO es control, creamos uno tentativo
+  // (se mantiene hasta finalizar y se usa también en "Pedidos")
+  if (direccion === 'IN') {
+    const ctl3 = cleanText.toLowerCase();
+    if (!['inicio','menu','menú','volver'].includes(ctl3)) {
+      if (!conv.currentOrderId) {
+        conv.currentOrderId = `ORD-${waId}-${Date.now()}`;
+        conv.currentOrderCreatedAt = Date.now();
+      }
+    }
+  }
+
   conv.log = appendWithSep(conv.log, line, ';');
 
   // Mezcla con lo existente en Sheets para no perder historial si el servidor reinicia
@@ -973,18 +1017,14 @@ function iniciarFlujo(from, flujo) {
   const subFlujosPago = new Set(['pago', 'pago_info', 'pago_anticipado_info']);
 
   // Si el usuario inicia un flujo principal (1-7 o por texto), consideramos que es un nuevo recorrido.
-  // Reiniciamos control de pedido para que se genere un nuevo order_id al finalizar.
-  if (!subFlujosPago.has(flujo)) {
-    try {
-      const conv = ensureConv(from);
-      conv.pedidoFinalizado = false;
-      conv.pedidoLogged = false;
-      conv.currentOrderId = null;
-      conv.currentOrderCreatedAt = null;
-      conv.lastFinalMessageAt = null;
-    } catch(e) {}
-  }
-  if (!subFlujosPago.has(flujo)) {
+// Reiniciamos control de pedido para que se genere un nuevo order_id al finalizar.
+if (!subFlujosPago.has(flujo)) {
+  try {
+    const conv = ensureConv(from);
+    resetPedido(conv);
+  } catch(e) {}
+}
+if (!subFlujosPago.has(flujo)) {
     userStates[from].flowRoot = flujo;
   } else if (!userStates[from].flowRoot) {
     // Si por algún motivo entramos a pago sin flowRoot, dejamos algo razonable
