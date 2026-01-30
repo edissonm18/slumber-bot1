@@ -526,11 +526,7 @@ async function upsertRowToSheet(sheetName, headers, rowValues, keyValue, keyHead
       return;
     }
     // Append nuevo (no existía)
-
-    // Guardamos SOLO interacciones del cliente (IN) para análisis de cuellos de botella
-    if (direccion === 'IN') {
-      await appendRowToSheet(sheetName, rowValues);
-    }
+    await appendRowToSheet(sheetName, rowValues);
   } catch (e) {
     console.error(`❌ Error UPSERT en Sheets (${sheetName}):`, e.response?.data || e.message);
   }
@@ -581,7 +577,7 @@ async function mergeExistingConversacionRow({ sheetName, headers, keyValue, newL
       sheetName,
       headers,
       keyValue,
-      ['waid','wa_id','wa id','wald','numero de whatsapp','número de whatsapp','telefono','teléfono']
+      ['order_id','pedido_id','orderid','order id','pedido id']
     );
     if (!rowNumber) return;
 
@@ -690,7 +686,9 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const headers = await getSheetHeaders(sheetName);
   const conv = ensureConv(waId);
 
-  // Asegura que exista un order_id para esta sesión (para que Conversaciones sea 1 fila por pedido)
+  
+  if (!conv.currentOrderId) { conv.currentOrderId = `ORD-${waId}-${Date.now()}`; conv.currentOrderCreatedAt = Date.now(); }
+// Asegura que exista un order_id para esta sesión (para que Conversaciones sea 1 fila por pedido)
   if (!conv.currentOrderId) {
     conv.currentOrderId = `ORD-${waId}-${Date.now()}`;
     conv.currentOrderCreatedAt = Date.now();
@@ -705,13 +703,9 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   const cleanText = rawText.replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
 
-  // Acumula todo lo que escribe el cliente durante el pedido (desde inicio hasta finalizar)
-  if (direccion === 'IN') {
-    conv.datosClientePedido = appendWithSep(conv.datosClientePedido || '', cleanText, '\n');
-  }
-
-
-  // Si el cliente escribe "inicio" (o similares), reiniciamos el pedido actual para que NO herede datos anteriores
+  
+  if (direccion === 'IN') { conv.datosClientePedido = appendWithSep(conv.datosClientePedido || '', cleanText, ';'); }
+// Si el cliente escribe "inicio" (o similares), reiniciamos el pedido actual para que NO herede datos anteriores
   if (direccion === 'IN') {
     const ctl2 = cleanText.toLowerCase();
     if (['inicio','menu','menú','volver'].includes(ctl2)) {
@@ -770,8 +764,7 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     metodoPago: conv.metodoPago || '',
     producto: conv.producto || '',
     ultimaInteraccion: conv.ultimaInteraccion || '',
-    log: line,
-    
+    log: conv.log || line,
     
     datosCliente: conv.datosClientePedido || '',
     adjuntos: conv.adjuntosPedido || '',
@@ -784,17 +777,20 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   const row = headers ? buildRowFromHeaders(headers, data) : null;
   if (!row) return;
 
-  // Guardamos UNA fila por pedido (order_id) en "Conversaciones" para que queden todos los pedidos del mismo WhatsApp
-  // (igual que en la pestaña "Pedidos"). No se sobreescribe todo en una sola fila por número.
-  await upsertRowToSheet(
-    sheetName,
-    headers,
-    row,
-    (conv.currentOrderId || ''),
-    ['order_id','orderid','order id','pedido_id','pedido id']
-  );
+  // Guardamos UNA fila por pedido (order_id) en "Conversaciones" usando UPSERT.
+// Solo guardamos mensajes IN (cliente) para no contaminar la hoja con respuestas del bot.
+if (direccion === 'IN') {
+  const keyOrderId = conv.currentOrderId || data.orderId || '';
+  const headersNorm = (headers || []).map(h => (h || '').toString().toLowerCase().trim());
+  const hasOrderId = headersNorm.includes('order_id') || headersNorm.includes('pedido_id') || headersNorm.includes('orderid');
 
-  // Si el pedido ya fue finalizado, cualquier mensaje/adjunto adicional debe actualizar el pedido activo
+  if (hasOrderId && keyOrderId) {
+    await upsertRowToSheet(sheetName, headers, row, keyOrderId, ['order_id','pedido_id','orderid','order id','pedido id']);
+  } else {
+    await appendRowToSheet(sheetName, row);
+  }
+}
+// Si el pedido ya fue finalizado, cualquier mensaje/adjunto adicional debe actualizar el pedido activo
   if (!__updatingPedidoFromConv && conv.pedidoFinalizado && conv.currentOrderId) {
     __updatingPedidoFromConv = true;
     try {
@@ -1034,7 +1030,7 @@ function iniciarFlujo(from, flujo) {
 if (!subFlujosPago.has(flujo)) {
   try {
     const conv = ensureConv(from);
-    resetPedido(conv, waId);
+    resetPedido(conv, from);
   } catch(e) {}
 }
 if (!subFlujosPago.has(flujo)) {
@@ -1475,7 +1471,7 @@ const PAYMENT_ANTICIPADO_TEXT = [
   "",
   "✳ *¿Qué deseas hacer ahora?*",
   // Sustituimos enumeraciones por emojis numéricos para compatibilidad
-  '2️⃣ Ver opciones de pago',
+  '1️⃣ Ver opciones de pago',
   '↩ Escribe "inicio" para regresar al menú principal.'
 ].join("\n");
 
