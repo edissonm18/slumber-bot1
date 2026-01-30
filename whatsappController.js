@@ -526,7 +526,11 @@ async function upsertRowToSheet(sheetName, headers, rowValues, keyValue, keyHead
       return;
     }
     // Append nuevo (no existía)
-    await appendRowToSheet(sheetName, rowValues);
+
+    // Guardamos SOLO interacciones del cliente (IN) para análisis de cuellos de botella
+    if (direccion === 'IN') {
+      await appendRowToSheet(sheetName, rowValues);
+    }
   } catch (e) {
     console.error(`❌ Error UPSERT en Sheets (${sheetName}):`, e.response?.data || e.message);
   }
@@ -700,6 +704,12 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   const rawText = (texto || '').toString();
   const cleanText = rawText.replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
+
+  // Acumula todo lo que escribe el cliente durante el pedido (desde inicio hasta finalizar)
+  if (direccion === 'IN') {
+    conv.datosClientePedido = appendWithSep(conv.datosClientePedido || '', cleanText, '\n');
+  }
+
 
   // Si el cliente escribe "inicio" (o similares), reiniciamos el pedido actual para que NO herede datos anteriores
   if (direccion === 'IN') {
@@ -1811,9 +1821,9 @@ ${ENUM_ICONS[1]} *Protectores*
       `🔥 ¡Aprovecha esta promoción limitada y lleva tu Colchón Ónix con la mejor calidad y al mejor precio!\n\n` +
       `✳ ¿Qué deseas hacer ahora?\n` +
       // Reemplazamos los glifos de enumeración por emojis numéricos para compatibilidad
-      `${ENUM_ICONS[0]} Finalizar pedido\n` +
       `${ENUM_ICONS[1]} Ver opciones de pago\n` +
-      `↩ Escribe "inicio" para regresar al menú principal.`;
+      `
+↩ Escribe "inicio" para regresar al menú principal.`;
     // Marcamos que la promoción ya fue mostrada para que el siguiente mensaje del usuario se interprete como acción
     userStates[from] = userStates[from] || {};
     userStates[from].promocionMostrada = true;
@@ -2467,9 +2477,9 @@ if (state?.flujo === 'promociones') {
       `🚚 Envío GRATIS en: Madrid, Facatativá, Mosquera, Funza, Bojacá, El Rosal y Bogotá.\n\n` +
       `🔥 ¡Aprovecha esta promoción limitada y lleva tu Colchón Ónix con la mejor calidad y al mejor precio!\n\n` +
       `✳ ¿Qué deseas hacer ahora?\n` +
-      `${ENUM_ICONS[0]} Finalizar pedido\n` +
       `${ENUM_ICONS[1]} Ver opciones de pago\n` +
-      `↩ Escribe "inicio" para regresar al menú principal.`;
+      `
+↩ Escribe "inicio" para regresar al menú principal.`;
     await sendMessage(from, promoMsg);
     // Enviamos el video promocional al final
     await sendVideo(from, PROMOCION_VIDEO_URL);
