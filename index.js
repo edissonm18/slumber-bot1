@@ -6,7 +6,8 @@ const whatsappController = require('./whatsappController');
 dotenv.config();
 
 const app = express();
-// Puerto configurado a través de la variable de entorno PORT o 3000 por defecto.
+
+// Puerto configurado por Render o fallback local
 const PORT = process.env.PORT || 3000;
 
 // Analiza automáticamente las solicitudes JSON entrantes.
@@ -29,7 +30,7 @@ requiredEnv.forEach(key => {
 app.get('/webhook', whatsappController.verifyWebhook);
 app.post('/webhook', whatsappController.handleMessage);
 
-// Inicia el servidor
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
+// Inicia el servidor (IMPORTANTE: 0.0.0.0 para Render)
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Servidor corriendo en puerto ${PORT}`);
 });
