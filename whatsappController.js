@@ -537,6 +537,70 @@ async function logEventoFlexible(eventData) {
 // ================== FIN SHEETS: UPSERT ==================
 
 
+// ================== SHEETS: MERGE PARA CONVERSACIONES (robusto ante reinicios) ==================
+// Si Render reinicia el proceso, el conversationCache se pierde y el log puede quedar solo con el último mensaje.
+// Para evitarlo, cuando vamos a UPSERT en "Conversaciones", leemos la fila existente (si existe) y mezclamos
+// los campos log / datos del cliente / adjuntos para no perder historial.
+async function mergeExistingConversacionRow({ sheetName, headers, keyValue, newLine, conv }) {
+  try {
+    const sheets = getSheetsClient();
+    const spreadsheetId = process.env.SHEET_ID;
+    if (!sheets || !spreadsheetId) return;
+
+    const rowNumber = await findRowNumberByKey(
+      sheetName,
+      headers,
+      keyValue,
+      ['waid','wa_id','wa id','wald','numero de whatsapp','número de whatsapp','telefono','teléfono']
+    );
+    if (!rowNumber) return;
+
+    const headersNorm = headers.map(h => (h || '').toString().toLowerCase().trim());
+    const logIdx = headersNorm.indexOf('log');
+    const datosIdx = headersNorm.indexOf('datos del cliente');
+    const adjIdx = headersNorm.indexOf('adjuntos');
+
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: getRangeForRow(sheetName, headers, rowNumber)
+    });
+    const row = (resp.data.values && resp.data.values[0]) ? resp.data.values[0] : [];
+
+    const existingLog = (logIdx >= 0 && row[logIdx]) ? row[logIdx].toString() : '';
+    const existingDatos = (datosIdx >= 0 && row[datosIdx]) ? row[datosIdx].toString() : '';
+    const existingAdj = (adjIdx >= 0 && row[adjIdx]) ? row[adjIdx].toString() : '';
+
+    // Mezcla log: siempre preserva lo que ya estaba en Sheets
+    if (existingLog) {
+      // Si el log actual está vacío o es muy corto, tomamos el existente y añadimos la nueva línea
+      let merged = existingLog;
+      if (newLine && !existingLog.includes(newLine)) {
+        merged = appendWithSep(merged, newLine, ';');
+      }
+      // Evita sobrescribir con algo más corto que el existente
+      if (!conv.log || conv.log.length < existingLog.length) {
+        conv.log = merged;
+      } else if (newLine && !conv.log.includes(newLine)) {
+        conv.log = appendWithSep(conv.log, newLine, ';');
+      }
+    }
+
+    // Mezcla datos del cliente y adjuntos: preserva lo existente si el cache está vacío
+    if (existingDatos && (!conv.datosClientePedido || conv.datosClientePedido.length < existingDatos.length)) {
+      conv.datosClientePedido = existingDatos;
+    }
+    if (existingAdj && (!conv.adjuntosPedido || conv.adjuntosPedido.length < existingAdj.length)) {
+      conv.adjuntosPedido = existingAdj;
+    }
+  } catch (e) {
+    // Silencioso para no romper el webhook
+  }
+}
+// ================== FIN MERGE PARA CONVERSACIONES ==================
+
+
+
+
 function getFriendlyFlowName(flow) {
   const map = {
     colchon: 'Colchones',
@@ -610,6 +674,10 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   const line = `${who} ${stamp}: ${cleanText}`;
   conv.log = appendWithSep(conv.log, line, ';');
 
+  // Mezcla con lo existente en Sheets para no perder historial si el servidor reinicia
+  await mergeExistingConversacionRow({ sheetName, headers, keyValue: waId, newLine: line, conv }).catch(()=>{});
+
+
   // Todo texto del cliente (IN) se acumula siempre
   if (direccion === 'IN' && cleanText) {
     conv.datosCliente = appendWithSep(conv.datosCliente, cleanText, ';');
@@ -655,7 +723,8 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     metodoPago: conv.metodoPago || '',
     producto: conv.producto || '',
     ultimaInteraccion: conv.ultimaInteraccion || '',
-    log: conv.log || '',
+    log: (conv.log && conv.log.length>0) ? conv.log : line,
+    
     datosCliente: conv.datosClientePedido || conv.datosCliente || '',
     adjuntos: conv.adjuntosPedido || conv.adjuntos || '',
     // compatibilidad
