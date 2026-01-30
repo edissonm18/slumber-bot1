@@ -760,7 +760,8 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     metodoPago: conv.metodoPago || '',
     producto: conv.producto || '',
     ultimaInteraccion: conv.ultimaInteraccion || '',
-    log: (conv.log && conv.log.length>0) ? conv.log : line,
+    log: line,
+    
     
     datosCliente: conv.datosClientePedido || '',
     adjuntos: conv.adjuntosPedido || '',
@@ -1464,7 +1465,6 @@ const PAYMENT_ANTICIPADO_TEXT = [
   "",
   "✳ *¿Qué deseas hacer ahora?*",
   // Sustituimos enumeraciones por emojis numéricos para compatibilidad
-  '1️⃣ Finalizar pedido',
   '2️⃣ Ver opciones de pago',
   '↩ Escribe "inicio" para regresar al menú principal.'
 ].join("\n");
