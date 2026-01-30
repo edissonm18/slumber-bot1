@@ -607,14 +607,9 @@ async function mergeExistingConversacionRow({ sheetName, headers, keyValue, newL
         conv.log = appendWithSep(conv.log, newLine, ';');
       }
     }
+    // NOTA: No mezclamos 'datosClientePedido' ni 'adjuntosPedido' desde Sheets,
+    // porque esos campos deben representar SOLO el pedido actual.
 
-    // Mezcla datos del cliente y adjuntos: preserva lo existente si el cache está vacío
-    if (existingDatos && (!conv.datosClientePedido || conv.datosClientePedido.length < existingDatos.length)) {
-      conv.datosClientePedido = existingDatos;
-    }
-    if (existingAdj && (!conv.adjuntosPedido || conv.adjuntosPedido.length < existingAdj.length)) {
-      conv.adjuntosPedido = existingAdj;
-    }
   } catch (e) {
     // Silencioso para no romper el webhook
   }
@@ -769,8 +764,8 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     ultimaInteraccion: conv.ultimaInteraccion || '',
     log: (conv.log && conv.log.length>0) ? conv.log : line,
     
-    datosCliente: conv.datosClientePedido || conv.datosCliente || '',
-    adjuntos: conv.adjuntosPedido || conv.adjuntos || '',
+    datosCliente: conv.datosClientePedido || '',
+    adjuntos: conv.adjuntosPedido || '',
     // compatibilidad
     fechaISO: stampISO,
     messageId: messageId || '',
@@ -978,7 +973,7 @@ async function finalizarPedidoYNotificar(from, state, thanksMessageOverride = ''
       try {
         await notifyVendedoresNuevoPedido({
           waId: from,
-          datosCliente: conv.datosClientePedido || conv.datosCliente || '',
+          datosCliente: conv.datosClientePedido || '',
           producto: conv.pedidoResumen || conv.producto || '',
           metodoPago: conv.metodoPago || '',
           adjuntos: conv.adjuntosPedido || conv.adjuntos || ''
