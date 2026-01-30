@@ -726,15 +726,14 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   }
 
   // Acumula datos SOLO del pedido actual (se reinicia con "inicio")
-  if (direccion === 'IN' && cleanText) {
-    const ctl = cleanText.toLowerCase();
-    if (!['inicio','menu','menú','volver'].includes(ctl)) {
-          // Evita que selecciones del menú tipo "1", "2", ... se guarden como "datos del cliente"
-    const onlyOneDigit = /^[1-9]$/.test(ctl);
-    if (!onlyOneDigit) {
-      conv.datosClientePedido = appendWithSep(conv.datosClientePedido, cleanText, ';');
-    }
+if (direccion === 'IN' && cleanText) {
+  const ctl = cleanText.toLowerCase();
+  const onlyOneDigit = /^[1-9]$/.test(ctl);
+  if (!['inicio','menu','menú','volver'].includes(ctl) && !onlyOneDigit) {
+    conv.datosClientePedido = appendWithSep(conv.datosClientePedido || '', cleanText, ';');
+  }
 }
+
   }
 
   // Si hay state, actualiza contexto de negocio
@@ -798,7 +797,6 @@ if (direccion === 'IN') {
     } catch (e) {}
     __updatingPedidoFromConv = false;
   }
-}
 
 async function notifyVendedoresNuevoPedido(pedido) {
   // Configura en Render: SELLER_NUMBERS=57300xxxxxxx,57311yyyyyyy (con código país)
@@ -815,7 +813,8 @@ async function notifyVendedoresNuevoPedido(pedido) {
 
   // Datos del cliente (todo lo que escribió, de inicio a fin)
   const datosRaw = (pedido.datosCliente || '').toString().trim();
-  const datosFmt = datosRaw
+  const finalDatos = datosRaw || 'Sin datos escritos por el cliente';
+  const datosFmt = finalDatos
     ? datosRaw.split(';').map(s => s.trim()).filter(Boolean).map(s => `• ${s}`).join('\n')
     : 'N/D';
 
