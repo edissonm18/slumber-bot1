@@ -262,7 +262,11 @@ function buildProductoResumenFromState(state) {
 
   // Promociones
   if (flowRoot.includes('promo')) {
-    const prod = state.promoProducto ? `Promo: ${state.promoProducto}` : 'Promoción';
+    let p = state.promoProducto;
+    if (p && typeof p === 'object') {
+      p = p.nombre || p.name || JSON.stringify(p);
+    }
+    const prod = p ? `Promo: ${p}` : 'Promoción';
     return prod;
   }
 
@@ -702,9 +706,6 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   const rawText = (texto || '').toString();
   const cleanText = rawText.replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
-
-  
-  if (direccion === 'IN') { conv.datosClientePedido = appendWithSep(conv.datosClientePedido || '', cleanText, ';'); }
 // Si el cliente escribe "inicio" (o similares), reiniciamos el pedido actual para que NO herede datos anteriores
   if (direccion === 'IN') {
     const ctl2 = cleanText.toLowerCase();
@@ -728,8 +729,12 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   if (direccion === 'IN' && cleanText) {
     const ctl = cleanText.toLowerCase();
     if (!['inicio','menu','menú','volver'].includes(ctl)) {
+          // Evita que selecciones del menú tipo "1", "2", ... se guarden como "datos del cliente"
+    const onlyOneDigit = /^[1-9]$/.test(ctl);
+    if (!onlyOneDigit) {
       conv.datosClientePedido = appendWithSep(conv.datosClientePedido, cleanText, ';');
     }
+}
   }
 
   // Si hay state, actualiza contexto de negocio
@@ -781,13 +786,8 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
 // Solo guardamos mensajes IN (cliente) para no contaminar la hoja con respuestas del bot.
 if (direccion === 'IN') {
   const keyOrderId = conv.currentOrderId || data.orderId || '';
-  const headersNorm = (headers || []).map(h => (h || '').toString().toLowerCase().trim());
-  const hasOrderId = headersNorm.includes('order_id') || headersNorm.includes('pedido_id') || headersNorm.includes('orderid');
-
-  if (hasOrderId && keyOrderId) {
+  if (keyOrderId) {
     await upsertRowToSheet(sheetName, headers, row, keyOrderId, ['order_id','pedido_id','orderid','order id','pedido id']);
-  } else {
-    await appendRowToSheet(sheetName, row);
   }
 }
 // Si el pedido ya fue finalizado, cualquier mensaje/adjunto adicional debe actualizar el pedido activo
