@@ -726,14 +726,14 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   }
 
   // Acumula datos SOLO del pedido actual (se reinicia con "inicio")
-if (direccion === 'IN' && cleanText) {
-  const ctl = cleanText.toLowerCase();
-  const onlyOneDigit = /^[1-9]$/.test(ctl);
-  if (!['inicio','menu','menú','volver'].includes(ctl) && !onlyOneDigit) {
-    conv.datosClientePedido = appendWithSep(conv.datosClientePedido || '', cleanText, ';');
-  }
-}
+  if (direccion === 'IN' && cleanText) {
+    const ctl = cleanText.toLowerCase();
+    const onlyOneDigit = /^[1-9]$/.test(ctl);
 
+    // No guardamos comandos de control ni opciones simples (1-9) para que "datos del cliente" no se ensucie
+    if (!['inicio','menu','menú','volver'].includes(ctl) && !onlyOneDigit) {
+      conv.datosClientePedido = appendWithSep(conv.datosClientePedido || '', cleanText, ';');
+    }
   }
 
   // Si hay state, actualiza contexto de negocio
@@ -797,6 +797,8 @@ if (direccion === 'IN') {
     } catch (e) {}
     __updatingPedidoFromConv = false;
   }
+
+}
 
 async function notifyVendedoresNuevoPedido(pedido) {
   // Configura en Render: SELLER_NUMBERS=57300xxxxxxx,57311yyyyyyy (con código país)
