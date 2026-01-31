@@ -815,10 +815,10 @@ async function notifyVendedoresNuevoPedido(pedido) {
 
   // Datos del cliente (todo lo que escribió, de inicio a fin)
   const datosRaw = (pedido.datosCliente || '').toString().trim();
-  const finalDatos = datosRaw || 'Sin datos escritos por el cliente';
-  const datosFmt = finalDatos
+  const finalDatos = (datosRaw && datosRaw.trim()) ? datosRaw.trim() : 'Sin datos escritos por el cliente';
+  const datosFmt = (datosRaw && datosRaw.trim())
     ? datosRaw.split(';').map(s => s.trim()).filter(Boolean).map(s => `• ${s}`).join('\n')
-    : 'N/D';
+    : finalDatos;
 
   // Producto: si ya viene como "Resumen de tu pedido", lo enviamos como bloque tal cual.
   const prodRaw = (pedido.producto || '').toString().trim();
@@ -926,6 +926,59 @@ async function logPedidoFlexible(pedidoData) {
 
 // ===== Finalización unificada de pedido =====
 // Se usa cuando el cliente ya eligió producto(s) + método de pago y está enviando datos para cerrar.
+
+// ===== SOPORTE: registro de solicitudes + notificación a asesores =====
+function buildSolicitudId() {
+  return `SUP-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+/**
+ * Registra una solicitud de soporte en la pestaña SOLICITUDES del Google Sheet.
+ * IMPORTANTE: la pestaña debe existir y tener encabezados acordes.
+ */
+async function logSolicitudSoporte({ sheetId, solicitud }) {
+  const sheetName = (process.env.SHEET_TAB_SOLICITUDES || 'SOLICITUDES').toString();
+  const row = [
+    solicitud.fecha_hora,
+    solicitud.solicitud_id,
+    solicitud.order_id || '',
+    solicitud.whatsapp,
+    solicitud.tipo || '',
+    solicitud.detalle || '',
+    solicitud.estado || 'Pendiente',
+    solicitud.asignado_a || ''
+  ];
+  // NOTA: appendRowToSheet agrega al final de la hoja.
+  await appendRowToSheet({ sheetId, sheetName, row });
+}
+
+async function notifyVendedoresSoporte({ from, solicitud }) {
+  const vendedores = getSellerWhatsappsFromEnv();
+  if (!vendedores.length) return;
+
+  const phoneDigits = String(from || '').replace(/[^0-9]/g, '');
+  const waLink = phoneDigits ? `https://wa.me/${phoneDigits}` : '';
+
+  const msg =
+`🆘 *SLUMBER — SOLICITUD DE SOPORTE*
+
+🆔 Solicitud: *${solicitud.solicitud_id}*
+📱 Cliente: ${from}
+🧩 Tipo: ${solicitud.tipo || 'N/D'}
+
+📝 Detalle:
+${solicitud.detalle || 'N/D'}
+
+${waLink ? `👉 Abrir chat: ${waLink}` : ''}
+
+*Acción sugerida:* responder al cliente lo antes posible.`;
+
+  for (const vendedor of vendedores) {
+    await sendTextMessage(vendedor, msg);
+  }
+}
+// ===== FIN SOPORTE =====
+
 async function finalizarPedidoYNotificar(from, state, thanksMessageOverride = '') {
   try {
     const conv = ensureConv(from);
@@ -2597,6 +2650,43 @@ if (state?.flujo === 'soporte') {
     await sendMessage(from,
       `🙏 *Gracias por compartir tu solicitud.* Un asesor se comunicará lo antes posible para atender tu caso.`
     );
+
+    // Registrar SOLICITUD en Sheets + notificar a asesores
+    try {
+      const solicitudId = buildSolicitudId();
+      const now = new Date();
+      const fechaHora = now.toISOString();
+
+      const solicitudTxt = (userStates[from].soporteSolicitud || '').toString();
+      const datosTxt = (userStates[from].soporteDatos || '').toString();
+
+      // Inferimos tipo por palabras clave (básico)
+      const lowerSolicitud = solicitudTxt.toLowerCase();
+      let tipo = 'Soporte';
+      if (lowerSolicitud.includes('garant')) tipo = 'Garantía';
+      else if (lowerSolicitud.includes('seguim') || lowerSolicitud.includes('estado')) tipo = 'Seguimiento';
+
+      const solicitud = {
+        fecha_hora: fechaHora,
+        solicitud_id: solicitudId,
+        order_id: '',
+        whatsapp: from,
+        tipo,
+        detalle: `Solicitud: ${solicitudTxt}\nDatos: ${datosTxt}`,
+        estado: 'Pendiente',
+        asignado_a: ''
+      };
+
+      // Solo si hay configuración de sheets
+      if (process.env.GOOGLE_SHEET_ID) {
+        await logSolicitudSoporte({ sheetId: process.env.GOOGLE_SHEET_ID, solicitud });
+      }
+      await notifyVendedoresSoporte({ from, solicitud });
+    } catch (e) {
+      // Si algo falla, no rompemos la conversación del cliente
+      console.error('Error registrando/notificando soporte:', e);
+    }
+
     // Pasar a modo manual para permitir atención personalizada
     userStates[from].flujo = 'manual';
     return;
