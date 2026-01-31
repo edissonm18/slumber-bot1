@@ -937,7 +937,7 @@ function buildSolicitudId() {
  * IMPORTANTE: la pestaña debe existir y tener encabezados acordes.
  */
 async function logSolicitudSoporte({ sheetId, solicitud }) {
-  const sheetName = (process.env.SHEET_TAB_SOLICITUDES || 'SOLICITUDES').toString();
+  const sheetName = (process.env.SHEET_TAB_SOLICITUDES || 'Solicitudes').toString();
   const row = [
     solicitud.fecha_hora,
     solicitud.solicitud_id,
