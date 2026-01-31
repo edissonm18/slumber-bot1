@@ -933,11 +933,46 @@ function buildSolicitudId() {
 }
 
 /**
- * Registra una solicitud de soporte en la pestaña SOLICITUDES del Google Sheet.
- * IMPORTANTE: la pestaña debe existir y tener encabezados acordes.
+ * Registra una solicitud de soporte en la pestaña "Solicitudes" del Google Sheet.
+ * - Usa el mismo SHEET_ID que el resto del proyecto.
+ * - Si la hoja tiene encabezados, intenta mapear por nombre para no depender del orden.
+ * - Si no hay encabezados, hace append con un orden estándar.
  */
-async function logSolicitudSoporte({ sheetId, solicitud }) {
+async function logSolicitudSoporte({ solicitud }) {
   const sheetName = (process.env.SHEET_TAB_SOLICITUDES || 'Solicitudes').toString();
+
+  // Si no hay Sheets configurado, no hacemos nada (pero tampoco rompemos la conversación)
+  if (!process.env.SHEET_ID) return;
+
+  // Intento 1: con encabezados (robusto)
+  const headers = await getSheetHeaders(sheetName);
+  if (headers && headers.length) {
+    const headersNorm = headers.map(h => (h || '').toString().toLowerCase().trim());
+
+    const row = new Array(headers.length).fill('');
+    const set = (cands, val) => {
+      const v = (val === undefined || val === null) ? '' : String(val);
+      for (const c of cands) {
+        const idx = headersNorm.indexOf(String(c).toLowerCase().trim());
+        if (idx >= 0) { row[idx] = v; return true; }
+      }
+      return false;
+    };
+
+    set(['fecha_hora','fecha hora','fecha y hora','fecha'], solicitud.fecha_hora);
+    set(['solicitud_id','solicitud id','id_solicitud','id solicitud'], solicitud.solicitud_id);
+    set(['order_id','pedido_id','orderid','order id','pedido id'], solicitud.order_id || '');
+    set(['whatsapp','numero whatsapp','número whatsapp','wa','waid'], solicitud.whatsapp);
+    set(['tipo','tipo_solicitud','tipo solicitud'], solicitud.tipo || '');
+    set(['detalle','descripcion','descripción','observaciones'], solicitud.detalle || '');
+    set(['estado'], solicitud.estado || 'Pendiente');
+    set(['asignado_a','asignado a','asesor','responsable'], solicitud.asignado_a || '');
+
+    await appendRowToSheet(sheetName, row);
+    return;
+  }
+
+  // Fallback: orden estándar
   const row = [
     solicitud.fecha_hora,
     solicitud.solicitud_id,
@@ -948,13 +983,16 @@ async function logSolicitudSoporte({ sheetId, solicitud }) {
     solicitud.estado || 'Pendiente',
     solicitud.asignado_a || ''
   ];
-  // NOTA: appendRowToSheet agrega al final de la hoja.
-  await appendRowToSheet({ sheetId, sheetName, row });
+  await appendRowToSheet(sheetName, row);
 }
 
 async function notifyVendedoresSoporte({ from, solicitud }) {
-  const vendedores = getSellerWhatsappsFromEnv();
-  if (!vendedores.length) return;
+  // Reutilizamos la misma variable de vendedores que el flujo de pedidos
+  const raw = (process.env.SELLER_NUMBERS || '').trim();
+  if (!raw) return;
+
+  const nums = raw.split(',').map(s => s.trim()).filter(Boolean);
+  if (!nums.length) return;
 
   const phoneDigits = String(from || '').replace(/[^0-9]/g, '');
   const waLink = phoneDigits ? `https://wa.me/${phoneDigits}` : '';
@@ -973,8 +1011,9 @@ ${waLink ? `👉 Abrir chat: ${waLink}` : ''}
 
 *Acción sugerida:* responder al cliente lo antes posible.`;
 
-  for (const vendedor of vendedores) {
-    await sendTextMessage(vendedor, msg);
+  for (const n of nums) {
+    // skipLog para no contaminar la hoja de Conversaciones con mensajes internos
+    await sendMessage(n, msg, { skipLog: true });
   }
 }
 // ===== FIN SOPORTE =====
@@ -1635,8 +1674,8 @@ bancarios son los siguientes:
 • *Nequi / Daviplata:* 3102796080
 
 ✳ *¿Qué deseas hacer ahora?*
-1️⃣ *Finalizar pedido*
-2️⃣ *Ver opciones de pago*
+1️⃣ *Ver opciones de pago*
+2️⃣ *Finalizar pedido*
 ↩ *Escribe \"inicio\" para regresar al menú principal.*
 `;
 
@@ -2678,9 +2717,9 @@ if (state?.flujo === 'soporte') {
       };
 
       // 1) Registrar en Sheets (si está configurado) - no debe bloquear la notificación
-      if (process.env.GOOGLE_SHEET_ID) {
+      if (process.env.SHEET_ID) {
         try {
-          await logSolicitudSoporte({ sheetId: process.env.GOOGLE_SHEET_ID, solicitud });
+          await logSolicitudSoporte({ solicitud });
         } catch (e) {
           console.error('Error registrando soporte en Sheets:', e);
         }
