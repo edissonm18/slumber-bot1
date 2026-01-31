@@ -782,8 +782,9 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   if (!row) return;
 
   // Guardamos UNA fila por pedido (order_id) en "Conversaciones" usando UPSERT.
-// Solo guardamos mensajes IN (cliente) para no contaminar la hoja con respuestas del bot.
-if (direccion === 'IN') {
+// Guardamos IN y OUT para tener el historial completo del bot y del cliente en la misma fila.
+// (Las notificaciones internas a vendedores usan sendMessage(...,{skipLog:true}) y no llegan aquí).
+{
   const keyOrderId = conv.currentOrderId || data.orderId || '';
   if (keyOrderId) {
     await upsertRowToSheet(sheetName, headers, row, keyOrderId, ['order_id','pedido_id','orderid','order id','pedido id']);
