@@ -2460,7 +2460,7 @@ if (state?.flujo === 'pago_anticipado_info') {
       try {
         await notifyVendedoresNuevoPedido({
           waId: from,
-          datosCliente: conv.datosCliente || '',
+          datosCliente: conv.datosClientePedido || conv.datosCliente || '',
           producto: conv.producto || '',
           metodoPago: conv.metodoPago || '',
           adjuntos: conv.adjuntosPedido || conv.adjuntos || ''
@@ -2677,15 +2677,26 @@ if (state?.flujo === 'soporte') {
         asignado_a: ''
       };
 
-      // Solo si hay configuración de sheets
+      // 1) Registrar en Sheets (si está configurado) - no debe bloquear la notificación
       if (process.env.GOOGLE_SHEET_ID) {
-        await logSolicitudSoporte({ sheetId: process.env.GOOGLE_SHEET_ID, solicitud });
+        try {
+          await logSolicitudSoporte({ sheetId: process.env.GOOGLE_SHEET_ID, solicitud });
+        } catch (e) {
+          console.error('Error registrando soporte en Sheets:', e);
+        }
       }
-      await notifyVendedoresSoporte({ from, solicitud });
+
+      // 2) Notificar asesores (aunque falle Sheets)
+      try {
+        await notifyVendedoresSoporte({ from, solicitud });
+      } catch (e) {
+        console.error('Error notificando soporte a asesores:', e);
+      }
     } catch (e) {
       // Si algo falla, no rompemos la conversación del cliente
-      console.error('Error registrando/notificando soporte:', e);
+      console.error('Error construyendo solicitud de soporte:', e);
     }
+
 
     // Pasar a modo manual para permitir atención personalizada
     userStates[from].flujo = 'manual';
