@@ -443,6 +443,51 @@ async function appendRowToSheet(sheetName, rowValues) {
 }
 
 
+// ✅ Registro SIMPLE (APPEND) en pestaña Conversaciones.
+// Sirve para garantizar que SIEMPRE quede historial aunque el UPSERT falle.
+async function logConversacionSimple({ direccion, waId, texto, messageId = '' }) {
+  try {
+    const sheetName = process.env.SHEET_TAB_CONVERSACIONES || 'Conversaciones';
+    const conv = ensureConv(waId);
+    if (!conv.currentOrderId) {
+      conv.currentOrderId = `ORD-${waId}-${Date.now()}`;
+      conv.currentOrderCreatedAt = Date.now();
+    }
+
+    const stamp = nowBogota();
+
+    const state = userStates[waId] || {};
+    const flujo = state.flowRoot || conv.flujoPrincipal || '';
+    const metodoPago = conv.metodoPago || state.metodoPago || '';
+    const producto = conv.producto || state.producto || '';
+    const cleanText = (texto || '').toString().replace(/\s+/g, ' ').trim();
+
+    const line = `${direccion === 'IN' ? 'IN' : 'OUT'} ${stamp}: ${cleanText}`;
+
+    // Acumula el log en memoria para que el UPSERT (si se usa) también tenga historial
+    conv.log = appendWithSep(conv.log || '', line, ';');
+
+    const row = [
+      stamp,                 // fecha y hora
+      waId,                  // numero de whatsapp
+      waId,                  // waId
+      conv.currentOrderId,   // order_id
+      flujo,                 // flujo principal
+      metodoPago,            // metodo de pago
+      producto,              // producto
+      cleanText,             // ultima interaccio(n)
+      conv.log               // log
+    ];
+
+    await appendRowToSheet(sheetName, row);
+    return true;
+  } catch (err) {
+    console.error('❌ logConversacionSimple falló:', err?.response?.data || err?.message || err);
+    return false;
+  }
+}
+
+
 // ================== SHEETS: UPSERT (evita 1 fila por mensaje) ==================
 // Cache de filas encontradas por waId (reduce lecturas)
 const sheetsRowIndexCache = {
@@ -716,6 +761,8 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const stamp = nowBogota();
 const who = direccion === 'IN' ? 'IN' : 'OUT';
   const rawText = (texto || '').toString();
+    // ✅ Log SIMPLE de entrada a Conversaciones (APPEND)
+    logConversacionSimple({ direccion: 'IN', waId: from, texto: cleanText, messageId }).catch(()=>{});
   const cleanText = rawText.replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
 // Si el cliente escribe "inicio" (o similares), reiniciamos el pedido actual para que NO herede datos anteriores
@@ -1255,7 +1302,7 @@ async function sendMessage(to, text, opts = {}) {
     // Registramos la salida en Google Sheets (no bloquea el webhook)
     // Si es una notificación interna a vendedores, podemos evitar contaminar la hoja de Conversaciones.
     if (!opts.skipLog) {
-      logConversacion({ direccion: 'OUT', waId: to, messageId: outId, texto: text, extra: '' }).catch(()=>{});
+      logConversacionSimple({ direccion: 'OUT', waId: to, texto: text, messageId: outId }).catch(()=>{});
     }
 
     // (Ajuste 2026-01-29) El cierre del pedido y el registro en Sheets se gestionan
