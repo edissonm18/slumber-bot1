@@ -420,7 +420,7 @@ else if (h === 'datos del cliente' || h === 'datos_cliente') row[i] = data.datos
 else if (h === 'adjuntos') row[i] = data.adjuntos || '';
 
 else if (h === 'wald') row[i] = data.waId || data.numeroWhatsapp || '';
-    else if (h === 'order_id' || h === 'pedido_id' || h === 'orderid') row[i] = data.orderId || '';
+    else if (h === 'order_id' || h === 'pedido_id' || h === 'orderid' || h === 'order id' || h === 'pedido id') row[i] = data.orderId || '';
   }
   return row;
 }
@@ -686,7 +686,7 @@ function getFlowStepForLog(state) {
 
 
 async function logConversacion({ direccion, waId, messageId, texto, extra, msgType = 'text', mediaId = '', mediaCaption = '' }) {
-  const sheetName = 'Conversaciones';
+  const sheetName = process.env.SHEET_TAB_CONVERSACIONES || 'Conversaciones';
   const headers = await getSheetHeaders(sheetName);
   const conv = ensureConv(waId);
 
@@ -787,7 +787,11 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
 {
   const keyOrderId = conv.currentOrderId || data.orderId || '';
   if (keyOrderId) {
+    try {
     await upsertRowToSheet(sheetName, headers, row, keyOrderId, ['order_id','pedido_id','orderid','order id','pedido id']);
+  } catch (err) {
+    console.error('❌ Error guardando en pestaña Conversaciones:', err?.response?.data || err?.message || err);
+  }
   }
 }
 // Si el pedido ya fue finalizado, cualquier mensaje/adjunto adicional debe actualizar el pedido activo
@@ -1111,31 +1115,56 @@ async function finalizarPedidoYNotificar(from, state, thanksMessageOverride = ''
 // Si se desea limpiar completamente el estado (por ejemplo al escribir "inicio"), se debe
 // eliminar manualmente la entrada en userStates antes de llamar a esta función.
 function iniciarFlujo(from, flujo) {
-  if (!userStates[from]) {
-    userStates[from] = {};
-  }
-  // Guardamos el "flujo raíz" (categoría principal) para que en Sheets sea entendible:
-  // colchon / salas / comedor / basecama / cabecero / almohada / soporte / promociones
-  // Cuando entramos a subflujos de pago, NO queremos perder el flujo raíz.
+  if (!userStates[from]) userStates[from] = {};
+
+  // Flujos de pago (NO deben cambiar flowRoot ni resetear pedido)
   const subFlujosPago = new Set(['pago', 'pago_info', 'pago_anticipado_info']);
 
-  // Si el usuario inicia un flujo principal (1-7 o por texto), consideramos que es un nuevo recorrido.
-// Reiniciamos control de pedido para que se genere un nuevo order_id al finalizar.
-if (!subFlujosPago.has(flujo)) {
-  try {
-    const conv = ensureConv(from);
-    resetPedido(conv, from);
-  } catch(e) {}
-}
-if (!subFlujosPago.has(flujo)) {
-    userStates[from].flowRoot = flujo;
-  } else if (!userStates[from].flowRoot) {
-    // Si por algún motivo entramos a pago sin flowRoot, dejamos algo razonable
-    userStates[from].flowRoot = 'checkout';
+  // ✅ Flujos raíz (los que SÍ representan "nuevo recorrido" desde el menú principal)
+  // Ajusta nombres si en tu bot usas alguno distinto.
+  const flujosRaiz = new Set(['colchon', 'salas', 'comedor', 'almohadas', 'promociones', 'pagos', 'soporte']);
+
+  // ✅ Sub-flujos dentro de un mismo pedido (NO deben resetear order_id)
+  // (Ej: basecama/cabecero son complementos del pedido de colchón)
+  const subFlujosDePedido = new Set(['basecama', 'cabecero', 'protector', 'almohada']);
+
+  const prevRoot = userStates[from].flowRoot || '';
+
+  // Si entramos a pago, no tocamos flowRoot ni reseteamos
+  if (subFlujosPago.has(flujo)) {
+    if (!userStates[from].flowRoot) userStates[from].flowRoot = 'checkout';
+    userStates[from].flujo = flujo;
+    return;
   }
 
-  userStates[from].flujo = flujo; // fase actual
+  // Si el usuario entra a un flujo raíz distinto al anterior, ahí sí es nuevo recorrido -> reset
+  const isFlujoRaiz = flujosRaiz.has(flujo);
+  const shouldReset = isFlujoRaiz && prevRoot && prevRoot !== flujo;
+
+  // Si no había root aún y entramos a un flujo raíz, también iniciamos pedido limpio
+  const shouldInitReset = isFlujoRaiz && !prevRoot;
+
+  // Si entra a sub-flujo del pedido, NO resetear (mantener order_id)
+  const isSubFlujoPedido = subFlujosDePedido.has(flujo);
+
+  if ((shouldReset || shouldInitReset) && !isSubFlujoPedido) {
+    try {
+      const conv = ensureConv(from);
+      resetPedido(conv, from); // genera nuevo order_id para nuevo recorrido
+    } catch (e) {}
+  }
+
+  // flowRoot: solo cambia cuando es flujo raíz o cuando aún no existe
+  if (isFlujoRaiz) {
+    userStates[from].flowRoot = flujo;
+  } else if (!userStates[from].flowRoot) {
+    // fallback razonable
+    userStates[from].flowRoot = flujo;
+  }
+
+  userStates[from].flujo = flujo;
 }
+
 
 // Utilidad: formatea valores como moneda con separadores de miles
 
