@@ -373,9 +373,8 @@ async function getSheetHeaders(sheetName) {
 function buildRowFromHeaders(headers, data) {
   if (!Array.isArray(headers) || headers.length === 0) return null;
   const row = new Array(headers.length).fill('');
-  const norm = (s) => (s || '').toString().toLowerCase().trim();
-
-  for (let i = 0; i < headers.length; i++) {
+  const norm = (s) => normalizeHeader(s);
+for (let i = 0; i < headers.length; i++) {
     const h = norm(headers[i]);
     // Conversaciones (según tu estructura)
     if (h === 'fechaiso') row[i] = data.fechaISO || '';
@@ -410,11 +409,11 @@ function buildRowFromHeaders(headers, data) {
 
 // === NUEVOS CAMPOS (Hoja Conversaciones / Pedidos) ===
 else if (h === 'fecha y hora' || h === 'fecha_hora' || h === 'fechahora') row[i] = data.fechaHora || data.fechaISO || '';
-else if (h === 'numero de whatsapp' || h === 'número de whatsapp' || h === 'numero_whatsapp' || h === 'whatsapp' ) row[i] = data.numeroWhatsapp || data.waId || '';
+else if (h === 'numero de whatsapp' || h === 'numero de whats' || h === 'numero_whatsapp' || h === 'whatsapp') row[i] = data.numeroWhatsapp || data.waId || '';
 else if (h === 'flujo principal' || h === 'flujo_principal') row[i] = data.flujoPrincipal || data.flujo || '';
 else if (h === 'metodo de pago' || h === 'método de pago' || h === 'metodo_pago' || h === 'medio_pago') row[i] = data.metodoPago || '';
 else if (h === 'producto') row[i] = data.producto || '';
-else if (h === 'ultima interaccion' || h === 'última interacción' || h === 'ultima_interaccion') row[i] = data.ultimaInteraccion || data.step || '';
+else if (h === 'ultima interaccion' || h === 'ultima interaccio' || h === 'ultima_interaccion') row[i] = data.ultimaInteraccion || data.step || '';
 else if (h === 'log') row[i] = data.log || '';
 else if (h === 'datos del cliente' || h === 'datos_cliente') row[i] = data.datosCliente || '';
 else if (h === 'adjuntos') row[i] = data.adjuntos || '';
@@ -468,7 +467,14 @@ function getRangeForRow(sheetName, headers, rowNumber) {
 }
 
 function normalizeHeader(h) {
-  return (h || '').toString().toLowerCase().trim();
+  // Normaliza headers para comparar de forma tolerante:
+  // - minúsculas
+  // - sin tildes/diacríticos
+  // - espacios colapsados
+  // - sin caracteres raros
+  const s = (h || '').toString().trim().toLowerCase();
+  const noAccents = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return noAccents.replace(/\s+/g, ' ').trim();
 }
 
 async function findRowNumberByKey(sheetName, headers, keyValue, keyHeaderCandidates = ['order_id','orderid','order id','pedido_id','pedido id']) {
@@ -540,6 +546,12 @@ async function upsertRowToSheet(sheetName, headers, rowValues, keyValue, keyHead
 async function logEventoFlexible(eventData) {
   const sheetName = 'Eventos';
   const headers = await getSheetHeaders(sheetName);
+  if (!global.__slumberConvHeadersLogged) {
+    global.__slumberConvHeadersLogged = true;
+    console.log('📄 Sheets: usando pestaña Conversaciones =', sheetName);
+    console.log('📄 Sheets: headers Conversaciones =', headers);
+  }
+
   if (!headers) return; // si no existe, no hacemos nada
   const data = {
     fechaISO: new Date().toISOString(),
