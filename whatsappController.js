@@ -803,6 +803,25 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
     await upsertRowToSheet(sheetName, headers, row, keyOrderId, ['order_id','pedido_id','orderid','order id','pedido id']);
   } catch (err) {
     console.error('❌ Error guardando en pestaña Conversaciones:', err?.response?.data || err?.message || err);
+    try {
+      // Fallback: si el UPSERT falla (headers/rango), hacemos APPEND directo con el orden esperado de columnas.
+      // Orden esperado (según tu hoja): fecha y hora | numero de whatsapp | waId | order_id | flujo principal | metodo de pago | producto | ultima interaccio | log
+      const fallbackRow = [
+        data.fechaHora || stamp,
+        waId,
+        waId,
+        keyOrderId,
+        data.flujoPrincipal || '',
+        data.metodoPago || '',
+        data.producto || '',
+        data.ultimaInteraccion || '',
+        data.log || conv.log || ''
+      ];
+      await appendRowToSheet(sheetName, fallbackRow);
+      console.log('✅ Fallback APPEND en Conversaciones aplicado para order_id:', keyOrderId);
+    } catch (err2) {
+      console.error('❌ Fallback APPEND también falló (Conversaciones):', err2?.response?.data || err2?.message || err2);
+    }
   }
   }
 }
