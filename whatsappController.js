@@ -748,7 +748,6 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const conv = ensureConv(waId);
 
   
-  if (!conv.currentOrderId) { conv.currentOrderId = `ORD-${waId}-${Date.now()}`; conv.currentOrderCreatedAt = Date.now(); }
 // Asegura que exista un order_id para esta sesión (para que Conversaciones sea 1 fila por pedido)
   if (!conv.currentOrderId) {
     conv.currentOrderId = `ORD-${waId}-${Date.now()}`;
@@ -761,8 +760,6 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const stamp = nowBogota();
 const who = direccion === 'IN' ? 'IN' : 'OUT';
   const rawText = (texto || '').toString();
-    // ✅ Log SIMPLE de entrada a Conversaciones (APPEND)
-    logConversacionSimple({ direccion: 'IN', waId: from, texto: cleanText, messageId }).catch(()=>{});
   const cleanText = rawText.replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
 // Si el cliente escribe "inicio" (o similares), reiniciamos el pedido actual para que NO herede datos anteriores
@@ -1302,7 +1299,7 @@ async function sendMessage(to, text, opts = {}) {
     // Registramos la salida en Google Sheets (no bloquea el webhook)
     // Si es una notificación interna a vendedores, podemos evitar contaminar la hoja de Conversaciones.
     if (!opts.skipLog) {
-      logConversacionSimple({ direccion: 'OUT', waId: to, texto: text, messageId: outId }).catch(()=>{});
+      logConversacion({ direccion: 'OUT', waId: to, messageId: outId, texto: text, extra: '', msgType: 'text' }).catch(()=>{});
     }
 
     // (Ajuste 2026-01-29) El cierre del pedido y el registro en Sheets se gestionan
