@@ -1,6 +1,6 @@
 // ===== SLUMBER BOT CONTROLLER (DEBUG BUILD) =====
 // Build: v6-debug | Generated: 2026-02-11T12:50:45.219714Z
-const __SLUMBER_BUILD = 'v6-debug';
+const __SLUMBER_BUILD = 'v7-fix-conversaciones';
 console.log('🚀 Slumber whatsappController cargado ->', __SLUMBER_BUILD);
 // ==============================================
 
@@ -433,7 +433,7 @@ else if (h === 'wald') row[i] = data.waId || data.numeroWhatsapp || '';
 async function appendRowToSheet(sheetName, rowValues) {
   const sheets = getSheetsClient();
   const spreadsheetId = process.env.SHEET_ID;
-  if (!sheets || !spreadsheetId) return;
+  if (!sheets || !spreadsheetId) return false;
 
   try {
     await sheets.spreadsheets.values.append({
@@ -443,8 +443,11 @@ async function appendRowToSheet(sheetName, rowValues) {
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [rowValues] }
     });
+    return true;
   } catch (e) {
     console.error(`❌ Error escribiendo en Sheets (${sheetName}):`, e.response?.data || e.message);
+    // Re-lanzamos para que el caller pueda reaccionar (fallback / logs)
+    throw e;
   }
 }
 
@@ -769,8 +772,6 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const stamp = nowBogota();
 const who = direccion === 'IN' ? 'IN' : 'OUT';
   const rawText = (texto || '').toString();
-    // ✅ Log SIMPLE de entrada a Conversaciones (APPEND)
-    logConversacionSimple({ direccion: 'IN', waId: from, texto: cleanText, messageId }).catch(()=>{});
   const cleanText = rawText.replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
 // Si el cliente escribe "inicio" (o similares), reiniciamos el pedido actual para que NO herede datos anteriores
@@ -1448,7 +1449,8 @@ exports.handleMessage = (req, res) => {
   setTimeout(() => messageHistory.delete(message.id), 5 * 60 * 1000);
 
   // Registramos el mensaje entrante en Google Sheets (no bloquea la respuesta del webhook)
-  logConversacion({ direccion: 'IN', waId: from, messageId: message.id, texto: textoParaLog, extra: '', msgType: msgType, mediaId: (message?.image?.id||message?.video?.id||message?.audio?.id||message?.document?.id||message?.sticker?.id||''), mediaCaption: (message?.image?.caption||message?.video?.caption||message?.document?.caption||'') }).catch(()=>{});
+  console.log('🧾 [Conv] logConversacion(IN) llamado -> waId=', from, 'type=', msgType);
+  logConversacion({ direccion: 'IN', waId: from, messageId: message.id, texto: textoParaLog, extra: '', msgType: msgType, mediaId: (message?.image?.id||message?.video?.id||message?.audio?.id||message?.document?.id||message?.sticker?.id||''), mediaCaption: (message?.image?.caption||message?.video?.caption||message?.document?.caption||'') }).catch((e)=>{ console.error('❌ logConversacion(IN) promise rechazado:', e?.response?.data || e?.message || e); });
 
   res.sendStatus(200);
   if (msgType === 'text' && textNormalized) handleTextMessageAsync(from, textNormalized);
