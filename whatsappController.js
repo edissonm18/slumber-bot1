@@ -1,6 +1,6 @@
 // ===== SLUMBER BOT CONTROLLER (DEBUG BUILD) =====
 // Build: v6-debug | Generated: 2026-02-11T12:50:45.219714Z
-const __SLUMBER_BUILD = 'v7-fix-conversaciones';
+const __SLUMBER_BUILD = 'v8-debug-sheets';
 console.log('🚀 Slumber whatsappController cargado ->', __SLUMBER_BUILD);
 // ==============================================
 
@@ -355,6 +355,35 @@ function getSheetsClient() {
   return sheetsCache.client;
 }
 
+
+// ✅ DEBUG: lista las hojas reales del Spreadsheet (nombres exactos) UNA sola vez por arranque.
+async function debugListSheetsOnce(tag = '') {
+  try {
+    if (global.__slumberSheetsListed) return;
+    global.__slumberSheetsListed = true;
+
+    const sheets = getSheetsClient();
+    const spreadsheetId = process.env.SHEET_ID;
+
+    if (!sheets || !spreadsheetId) {
+      console.log('⚠️ [SheetsDebug] No hay sheets client o SHEET_ID. tag=', tag);
+      return;
+    }
+
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const titles = (meta.data.sheets || []).map(s => ({
+      title: s.properties?.title,
+      sheetId: s.properties?.sheetId
+    }));
+
+    console.log('📊 [SheetsDebug] SpreadsheetId=', spreadsheetId, 'tag=', tag);
+    console.log('📊 [SheetsDebug] Hojas detectadas (titulo exacto):');
+    titles.forEach(s => console.log(`➡️ "${s.title}" (sheetId=${s.sheetId})`));
+  } catch (e) {
+    console.error('❌ [SheetsDebug] Error listando hojas:', e.response?.data || e.message);
+  }
+}
+
 async function getSheetHeaders(sheetName) {
   if (sheetsCache.headers[sheetName]) return sheetsCache.headers[sheetName];
 
@@ -436,17 +465,30 @@ async function appendRowToSheet(sheetName, rowValues) {
   if (!sheets || !spreadsheetId) return false;
 
   try {
-    await sheets.spreadsheets.values.append({
+    await debugListSheetsOnce('appendRowToSheet');
+
+    console.log('🧩 [SheetsDebug] Intentando append ->', {
+      spreadsheetId,
+      sheetName,
+      range: `${sheetName}!A:Z`,
+      cols: rowValues?.length || 0
+    });
+
+    const resp = await sheets.spreadsheets.values.append({
       spreadsheetId,
       range: `${sheetName}!A:Z`,
       valueInputOption: 'RAW',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [rowValues] }
     });
+
+    const updatedRange = resp?.data?.updates?.updatedRange || '';
+    const updatedRows = resp?.data?.updates?.updatedRows || '';
+    console.log('✅ [SheetsDebug] Append OK ->', { sheetName, updatedRange, updatedRows });
+
     return true;
   } catch (e) {
     console.error(`❌ Error escribiendo en Sheets (${sheetName}):`, e.response?.data || e.message);
-    // Re-lanzamos para que el caller pueda reaccionar (fallback / logs)
     throw e;
   }
 }
