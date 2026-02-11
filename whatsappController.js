@@ -1,3 +1,9 @@
+// ===== SLUMBER BOT CONTROLLER (DEBUG BUILD) =====
+// Build: v6-debug | Generated: 2026-02-11T12:50:45.219714Z
+const __SLUMBER_BUILD = 'v6-debug';
+console.log('🚀 Slumber whatsappController cargado ->', __SLUMBER_BUILD);
+// ==============================================
+
 const axios = require('axios');
 
 
@@ -479,10 +485,12 @@ async function logConversacionSimple({ direccion, waId, texto, messageId = '' })
       conv.log               // log
     ];
 
+    console.log('📝 [Conv] intentando APPEND ->', sheetName, 'order_id=', conv.currentOrderId, 'dir=', direccion);
     await appendRowToSheet(sheetName, row);
+    console.log('✅ [Conv] APPEND OK ->', sheetName, 'order_id=', conv.currentOrderId);
     return true;
   } catch (err) {
-    console.error('❌ logConversacionSimple falló:', err?.response?.data || err?.message || err);
+    console.error('❌ logConversacionSimple falló (sheet=' + (process.env.SHEET_TAB_CONVERSACIONES || 'Conversaciones') + '):', err?.response?.data || err?.message || err);
     return false;
   }
 }
@@ -748,6 +756,7 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const conv = ensureConv(waId);
 
   
+  if (!conv.currentOrderId) { conv.currentOrderId = `ORD-${waId}-${Date.now()}`; conv.currentOrderCreatedAt = Date.now(); }
 // Asegura que exista un order_id para esta sesión (para que Conversaciones sea 1 fila por pedido)
   if (!conv.currentOrderId) {
     conv.currentOrderId = `ORD-${waId}-${Date.now()}`;
@@ -760,6 +769,8 @@ async function logConversacion({ direccion, waId, messageId, texto, extra, msgTy
   const stamp = nowBogota();
 const who = direccion === 'IN' ? 'IN' : 'OUT';
   const rawText = (texto || '').toString();
+    // ✅ Log SIMPLE de entrada a Conversaciones (APPEND)
+    logConversacionSimple({ direccion: 'IN', waId: from, texto: cleanText, messageId }).catch(()=>{});
   const cleanText = rawText.replace(/\s+/g,' ').trim();
   const line = `${who} ${stamp}: ${cleanText}`;
 // Si el cliente escribe "inicio" (o similares), reiniciamos el pedido actual para que NO herede datos anteriores
@@ -840,74 +851,35 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   // Guardamos UNA fila por pedido (order_id) en "Conversaciones" usando UPSERT.
 // Guardamos IN y OUT para tener el historial completo del bot y del cliente en la misma fila.
 // (Las notificaciones internas a vendedores usan sendMessage(...,{skipLog:true}) y no llegan aquí).
-
-const keyOrderId = conv.currentOrderId || data.orderId || '';
-if (!keyOrderId) return;
-
-// IMPORTANTE: upsertRowToSheet() atrapa errores internamente. Para garantizar que SIEMPRE se escriba,
-// hacemos aquí un UPSERT "estricto" con fallback APPEND si algo falla.
-try {
-  if (headers && Array.isArray(headers) && headers.length > 0) {
-    const rowNumber = await findRowNumberByKey(
-      sheetName,
-      headers,
-      keyOrderId,
-      ['order_id','pedido_id','orderid','order id','pedido id']
-    );
-
-    if (rowNumber) {
-      // Update existente
-      const sheets = getSheetsClient();
-      const spreadsheetId = process.env.SHEET_ID;
-      if (sheets && spreadsheetId) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId,
-          range: getRangeForRow(sheetName, headers, rowNumber),
-          valueInputOption: 'RAW',
-          requestBody: { values: [row] }
-        });
-      }
-    } else {
-      // Append nuevo
-      await appendRowToSheet(sheetName, row);
+{
+  const keyOrderId = conv.currentOrderId || data.orderId || '';
+  if (keyOrderId) {
+    try {
+    await upsertRowToSheet(sheetName, headers, row, keyOrderId, ['order_id','pedido_id','orderid','order id','pedido id']);
+  } catch (err) {
+    console.error('❌ Error guardando en pestaña Conversaciones:', err?.response?.data || err?.message || err);
+    try {
+      // Fallback: si el UPSERT falla (headers/rango), hacemos APPEND directo con el orden esperado de columnas.
+      // Orden esperado (según tu hoja): fecha y hora | numero de whatsapp | waId | order_id | flujo principal | metodo de pago | producto | ultima interaccio | log
+      const fallbackRow = [
+        data.fechaHora || stamp,
+        waId,
+        waId,
+        keyOrderId,
+        data.flujoPrincipal || '',
+        data.metodoPago || '',
+        data.producto || '',
+        data.ultimaInteraccion || '',
+        data.log || conv.log || ''
+      ];
+      await appendRowToSheet(sheetName, fallbackRow);
+      console.log('✅ Fallback APPEND en Conversaciones aplicado para order_id:', keyOrderId);
+    } catch (err2) {
+      console.error('❌ Fallback APPEND también falló (Conversaciones):', err2?.response?.data || err2?.message || err2);
     }
-  } else {
-    // Si no pudimos leer headers, al menos dejamos un APPEND con el orden esperado.
-    const fallbackRow = [
-      data.fechaHora || stamp,
-      waId,
-      waId,
-      keyOrderId,
-      data.flujoPrincipal || '',
-      data.metodoPago || '',
-      data.producto || '',
-      data.ultimaInteraccion || '',
-      data.log || conv.log || ''
-    ];
-    await appendRowToSheet(sheetName, fallbackRow);
   }
-} catch (err) {
-  console.error('❌ Error guardando en pestaña Conversaciones (UPSERT estricto):', err?.response?.data || err?.message || err);
-  try {
-    // Fallback final: APPEND directo con orden esperado
-    const fallbackRow = [
-      data.fechaHora || stamp,
-      waId,
-      waId,
-      keyOrderId,
-      data.flujoPrincipal || '',
-      data.metodoPago || '',
-      data.producto || '',
-      data.ultimaInteraccion || '',
-      data.log || conv.log || ''
-    ];
-    await appendRowToSheet(sheetName, fallbackRow);
-    console.log('✅ Fallback APPEND en Conversaciones aplicado para order_id:', keyOrderId);
-  } catch (err2) {
-    console.error('❌ Fallback APPEND también falló (Conversaciones):', err2?.response?.data || err2?.message || err2);
   }
 }
-
 // Si el pedido ya fue finalizado, cualquier mensaje/adjunto adicional debe actualizar el pedido activo
   if (!__updatingPedidoFromConv && conv.pedidoFinalizado && conv.currentOrderId) {
     __updatingPedidoFromConv = true;
@@ -1338,7 +1310,7 @@ async function sendMessage(to, text, opts = {}) {
     // Registramos la salida en Google Sheets (no bloquea el webhook)
     // Si es una notificación interna a vendedores, podemos evitar contaminar la hoja de Conversaciones.
     if (!opts.skipLog) {
-      logConversacion({ direccion: 'OUT', waId: to, messageId: outId, texto: text, extra: '', msgType: 'text' }).catch(()=>{});
+      logConversacionSimple({ direccion: 'OUT', waId: to, texto: text, messageId: outId }).catch(()=>{});
     }
 
     // (Ajuste 2026-01-29) El cierre del pedido y el registro en Sheets se gestionan
