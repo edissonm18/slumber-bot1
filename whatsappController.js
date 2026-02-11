@@ -1,6 +1,6 @@
 // ===== SLUMBER BOT CONTROLLER (DEBUG BUILD) =====
 // Build: v6-debug | Generated: 2026-02-11T12:50:45.219714Z
-const __SLUMBER_BUILD = 'v8-debug-sheets';
+const __SLUMBER_BUILD = 'v9-debug-id-trim';
 console.log('🚀 Slumber whatsappController cargado ->', __SLUMBER_BUILD);
 // ==============================================
 
@@ -363,7 +363,11 @@ async function debugListSheetsOnce(tag = '') {
     global.__slumberSheetsListed = true;
 
     const sheets = getSheetsClient();
-    const spreadsheetId = process.env.SHEET_ID;
+    const spreadsheetIdRaw = process.env.SHEET_ID;
+    const spreadsheetId = (spreadsheetIdRaw || '').trim();
+    if (spreadsheetIdRaw && spreadsheetIdRaw !== spreadsheetId) {
+      console.log('⚠️ [SheetsDebug] SHEET_ID tenía espacios/hidden chars. raw=', JSON.stringify(spreadsheetIdRaw), 'trim=', JSON.stringify(spreadsheetId));
+    }
 
     if (!sheets || !spreadsheetId) {
       console.log('⚠️ [SheetsDebug] No hay sheets client o SHEET_ID. tag=', tag);
@@ -376,7 +380,7 @@ async function debugListSheetsOnce(tag = '') {
       sheetId: s.properties?.sheetId
     }));
 
-    console.log('📊 [SheetsDebug] SpreadsheetId=', spreadsheetId, 'tag=', tag);
+    console.log('📊 [SheetsDebug] SpreadsheetId=', spreadsheetId, 'raw=', JSON.stringify(spreadsheetIdRaw), 'tag=', tag);
     console.log('📊 [SheetsDebug] Hojas detectadas (titulo exacto):');
     titles.forEach(s => console.log(`➡️ "${s.title}" (sheetId=${s.sheetId})`));
   } catch (e) {
@@ -388,7 +392,13 @@ async function getSheetHeaders(sheetName) {
   if (sheetsCache.headers[sheetName]) return sheetsCache.headers[sheetName];
 
   const sheets = getSheetsClient();
-  const spreadsheetId = process.env.SHEET_ID;
+  const spreadsheetIdRaw = process.env.SHEET_ID;
+  const spreadsheetId = (spreadsheetIdRaw || '').trim();
+  if (spreadsheetIdRaw && spreadsheetIdRaw !== spreadsheetId) {
+    console.log('⚠️ [SheetsDebug] SHEET_ID tenía espacios/hidden chars. raw=', JSON.stringify(spreadsheetIdRaw), 'trim=', JSON.stringify(spreadsheetId));
+  }
+  console.log('🔎 [SheetsDebug] spreadsheetId len raw/trim =', (spreadsheetIdRaw||'').length, '/', spreadsheetId.length);
+
   if (!sheets || !spreadsheetId) return null;
 
   try {
