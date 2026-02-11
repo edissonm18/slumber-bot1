@@ -840,35 +840,74 @@ const who = direccion === 'IN' ? 'IN' : 'OUT';
   // Guardamos UNA fila por pedido (order_id) en "Conversaciones" usando UPSERT.
 // Guardamos IN y OUT para tener el historial completo del bot y del cliente en la misma fila.
 // (Las notificaciones internas a vendedores usan sendMessage(...,{skipLog:true}) y no llegan aquí).
-{
-  const keyOrderId = conv.currentOrderId || data.orderId || '';
-  if (keyOrderId) {
-    try {
-    await upsertRowToSheet(sheetName, headers, row, keyOrderId, ['order_id','pedido_id','orderid','order id','pedido id']);
-  } catch (err) {
-    console.error('❌ Error guardando en pestaña Conversaciones:', err?.response?.data || err?.message || err);
-    try {
-      // Fallback: si el UPSERT falla (headers/rango), hacemos APPEND directo con el orden esperado de columnas.
-      // Orden esperado (según tu hoja): fecha y hora | numero de whatsapp | waId | order_id | flujo principal | metodo de pago | producto | ultima interaccio | log
-      const fallbackRow = [
-        data.fechaHora || stamp,
-        waId,
-        waId,
-        keyOrderId,
-        data.flujoPrincipal || '',
-        data.metodoPago || '',
-        data.producto || '',
-        data.ultimaInteraccion || '',
-        data.log || conv.log || ''
-      ];
-      await appendRowToSheet(sheetName, fallbackRow);
-      console.log('✅ Fallback APPEND en Conversaciones aplicado para order_id:', keyOrderId);
-    } catch (err2) {
-      console.error('❌ Fallback APPEND también falló (Conversaciones):', err2?.response?.data || err2?.message || err2);
+
+const keyOrderId = conv.currentOrderId || data.orderId || '';
+if (!keyOrderId) return;
+
+// IMPORTANTE: upsertRowToSheet() atrapa errores internamente. Para garantizar que SIEMPRE se escriba,
+// hacemos aquí un UPSERT "estricto" con fallback APPEND si algo falla.
+try {
+  if (headers && Array.isArray(headers) && headers.length > 0) {
+    const rowNumber = await findRowNumberByKey(
+      sheetName,
+      headers,
+      keyOrderId,
+      ['order_id','pedido_id','orderid','order id','pedido id']
+    );
+
+    if (rowNumber) {
+      // Update existente
+      const sheets = getSheetsClient();
+      const spreadsheetId = process.env.SHEET_ID;
+      if (sheets && spreadsheetId) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: getRangeForRow(sheetName, headers, rowNumber),
+          valueInputOption: 'RAW',
+          requestBody: { values: [row] }
+        });
+      }
+    } else {
+      // Append nuevo
+      await appendRowToSheet(sheetName, row);
     }
+  } else {
+    // Si no pudimos leer headers, al menos dejamos un APPEND con el orden esperado.
+    const fallbackRow = [
+      data.fechaHora || stamp,
+      waId,
+      waId,
+      keyOrderId,
+      data.flujoPrincipal || '',
+      data.metodoPago || '',
+      data.producto || '',
+      data.ultimaInteraccion || '',
+      data.log || conv.log || ''
+    ];
+    await appendRowToSheet(sheetName, fallbackRow);
   }
+} catch (err) {
+  console.error('❌ Error guardando en pestaña Conversaciones (UPSERT estricto):', err?.response?.data || err?.message || err);
+  try {
+    // Fallback final: APPEND directo con orden esperado
+    const fallbackRow = [
+      data.fechaHora || stamp,
+      waId,
+      waId,
+      keyOrderId,
+      data.flujoPrincipal || '',
+      data.metodoPago || '',
+      data.producto || '',
+      data.ultimaInteraccion || '',
+      data.log || conv.log || ''
+    ];
+    await appendRowToSheet(sheetName, fallbackRow);
+    console.log('✅ Fallback APPEND en Conversaciones aplicado para order_id:', keyOrderId);
+  } catch (err2) {
+    console.error('❌ Fallback APPEND también falló (Conversaciones):', err2?.response?.data || err2?.message || err2);
   }
 }
+
 // Si el pedido ya fue finalizado, cualquier mensaje/adjunto adicional debe actualizar el pedido activo
   if (!__updatingPedidoFromConv && conv.pedidoFinalizado && conv.currentOrderId) {
     __updatingPedidoFromConv = true;
